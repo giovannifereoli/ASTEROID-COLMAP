@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "asteroid-colmap"
+version = "0.1.0"
+description = "Download Dawn Framing Camera images of Vesta (RC3) from the PDS and build a georeferenced landmark catalog with COLMAP"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Giovanni Fereoli", email = "gife3672@colorado.edu" }]
+keywords = ["Dawn", "Vesta", "COLMAP", "structure-from-motion", "landmarks", "optical navigation", "PDS"]
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "pandas>=2.0",
+    "matplotlib>=3.7",
+    "astropy>=5.3",
+    "pillow>=10.0",
+    "requests>=2.28",
+    "tqdm>=4.60",
+]
+
+[project.optional-dependencies]
+interactive = ["plotly>=5.0"]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+asteroid-colmap = "asteroid_colmap.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

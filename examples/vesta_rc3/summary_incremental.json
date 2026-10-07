@@ -1,0 +1,70 @@
+{
+  "num_input_images": 130,
+  "num_registered_images": 130,
+  "registered_by_sequence": {
+    "RC3": 65,
+    "RC3B": 65
+  },
+  "num_landmarks": 109821,
+  "num_curated_landmarks": 7517,
+  "curated_spacing_km": 10.0,
+  "num_outliers": 7,
+  "grades": {
+    "A": 43776,
+    "B": 46316,
+    "C": 19729
+  },
+  "num_observations": 1050617,
+  "median_track_length": 7.0,
+  "median_reproj_error_px": 0.23871835121411522,
+  "median_tri_angle_deg": 34.95891107791351,
+  "height_km_p05_p50_p95": [
+    -9.717,
+    -0.874,
+    8.214
+  ],
+  "lat_range_deg": [
+    -89.97002549365017,
+    73.73928261141506
+  ],
+  "label_pointing_offset_median_px": 2.3794200994629175,
+  "alignment": {
+    "num_aligned_images": 130,
+    "num_used_in_fit": 130,
+    "scale_km_per_unit": 1511.3150356046044,
+    "position_rms_km": 2.1045102510666656,
+    "position_max_km": 3.7839078643923423,
+    "attitude_median_deg": 0.02174917976562689,
+    "attitude_max_deg": 0.05293304754651838,
+    "boresight_median_px": 3.515949364134813,
+    "mirrored_or_reversed": false
+  },
+  "similarity": {
+    "scale_km_per_unit": 1511.3150356046044,
+    "R": [
+      [
+        -0.24049384870033777,
+        -0.1840325169341667,
+        -0.9530449839583519
+      ],
+      [
+        0.6452085544697885,
+        -0.7638529987386512,
+        -0.015313966075996052
+      ],
+      [
+        -0.7251680012082063,
+        -0.6185956910849335,
+        0.30244130173448297
+      ]
+    ],
+    "t_km": [
+      79.12869518393353,
+      -66.10291983339653,
+      -582.9702891645773
+    ]
+  },
+  "image_flip": "ud",
+  "colmap": "COLMAP 4.2.0.dev0 (Commit 752198c7 on 2026-07-06 without CUDA)",
+  "selected_model": "work_inc/colmap/model_txt/0"
+}
