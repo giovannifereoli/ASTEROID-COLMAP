@@ -26,6 +26,19 @@ FC_FILE = re.compile(r"^FC2\w+_\d{11}F(\d)[A-Z]\.FIT$", re.IGNORECASE)
 
 @dataclass(frozen=True)
 class RemoteImage:
+    """One FITS image and its detached PDS3 label in the remote archive.
+
+    Attributes
+    ----------
+    subdir : str
+        Archive sub-directory (observation sequence).
+    fit, lbl : str
+        File names of the image and of its label.
+    filter : int
+        FC filter number, parsed from the file name.
+    base_url : str
+        Dataset base URL; ends with ``/``.
+    """
     subdir: str
     fit: str
     lbl: str
@@ -33,10 +46,31 @@ class RemoteImage:
     base_url: str
 
     def url(self, name: str) -> str:
+        """Full URL of a file in this image's sub-directory.
+
+        Parameters
+        ----------
+        name : str
+            File name, usually :attr:`fit` or :attr:`lbl`.
+
+        Returns
+        -------
+        str
+        """
         return f"{self.base_url}{self.subdir}/{name}"
 
 
 def make_session() -> requests.Session:
+    """HTTP session with an identifying User-Agent and automatic retries.
+
+    HTTPS requests are retried up to 5 times, with exponential back-off (factor 1 s), on
+    connection errors and on status 429, 500, 502, 503 and 504. The pool keeps up to 16
+    connections, enough for the parallel downloads.
+
+    Returns
+    -------
+    requests.Session
+    """
     session = requests.Session()
     session.headers["User-Agent"] = f"asteroid-colmap/{__version__} (+https://github.com/colmap/colmap)"
     retry = Retry(total=5, backoff_factor=1.0, status_forcelist=(429, 500, 502, 503, 504))
@@ -50,7 +84,30 @@ def list_images(
     subdirs: tuple[str, ...] | None = None,
     session: requests.Session | None = None,
 ) -> list[RemoteImage]:
-    """Remote FITS images (with labels) of the selected filters, in time order."""
+    """List the remote FITS images, with labels, of the selected filters.
+
+    Parameters
+    ----------
+    dataset : Dataset
+        Archive location, default sub-directories and default filters.
+    filters : tuple of int, optional
+        FC filter numbers; default ``dataset.default_filters``.
+    subdirs : tuple of str, optional
+        Sub-directories to list; default ``dataset.subdirs``.
+    session : requests.Session, optional
+        Session to reuse; default :func:`make_session`.
+
+    Returns
+    -------
+    list of RemoteImage
+        By sub-directory, then by file name (time order within a sequence). Images
+        without a label are skipped with a warning.
+
+    Raises
+    ------
+    requests.HTTPError
+        If a directory listing cannot be fetched.
+    """
     filters = filters or dataset.default_filters
     session = session or make_session()
     images: list[RemoteImage] = []
@@ -71,6 +128,21 @@ def list_images(
 
 
 def select_evenly(items: list, n: int | None) -> list:
+    """Pick ``n`` items spread evenly over a list, including the first.
+
+    Parameters
+    ----------
+    items : list
+        Items in order.
+    n : int or None
+        Number to keep; ``None``, 0 or ``n >= len(items)`` keeps everything.
+
+    Returns
+    -------
+    list
+        New list of the selected items in their original order; for ``n > 1`` it also
+        includes the last item.
+    """
     if not n or n >= len(items):
         return list(items)
     idx = np.unique(np.linspace(0, len(items) - 1, n).round().astype(int))
@@ -78,7 +150,29 @@ def select_evenly(items: list, n: int | None) -> list:
 
 
 def _fetch(session: requests.Session, url: str, dest: Path) -> bool:
-    """Download ``url`` to ``dest`` atomically; returns False if it was already there."""
+    """Stream ``url`` to ``dest`` through a ``.part`` file that is renamed when complete.
+
+    Parameters
+    ----------
+    session : requests.Session
+        HTTP session.
+    url : str
+        Source URL.
+    dest : pathlib.Path
+        Target file; nothing is downloaded if it exists and is not empty.
+
+    Returns
+    -------
+    bool
+        True if the file was downloaded, False if it was already there.
+
+    Raises
+    ------
+    OSError
+        If fewer bytes than ``Content-Length`` arrived.
+    requests.HTTPError
+        On an HTTP error status.
+    """
     if dest.exists() and dest.stat().st_size > 0:
         return False
     tmp = dest.with_name(dest.name + ".part")
@@ -103,9 +197,32 @@ def download(
     max_images: int | None = None,
     workers: int = 6,
 ) -> list[Path]:
-    """Download FITS + LBL pairs into ``raw_dir/<subdir>/``; returns the label paths.
+    """Download FITS + LBL pairs into ``raw_dir/<subdir>/``.
 
     Already-complete files are skipped, so an interrupted download can simply be re-run.
+
+    Parameters
+    ----------
+    dataset : Dataset
+        Archive to download from.
+    raw_dir : pathlib.Path
+        Destination root.
+    filters, subdirs : tuple, optional
+        See :func:`list_images`.
+    max_images : int, optional
+        Keep only this many images, spread evenly over the listing (:func:`select_evenly`).
+    workers : int
+        Number of parallel download threads.
+
+    Returns
+    -------
+    list of pathlib.Path
+        Label paths of the selected images.
+
+    Raises
+    ------
+    RuntimeError
+        If no image matches the filters and sub-directories.
     """
     session = make_session()
     remote = select_evenly(list_images(dataset, filters, subdirs, session), max_images)

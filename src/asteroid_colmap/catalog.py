@@ -34,6 +34,25 @@ GRADES = {  # min track length, min triangulation angle (deg), max reprojection 
 
 
 def grade(track, tri_angle, error) -> np.ndarray:
+    """Quality grade of every landmark.
+
+    A landmark gets the highest grade in :data:`GRADES` whose three thresholds it meets,
+    and ``"C"`` otherwise.
+
+    Parameters
+    ----------
+    track : numpy.ndarray
+        Track lengths (number of images).
+    tri_angle : numpy.ndarray
+        Maximum triangulation angles (deg).
+    error : numpy.ndarray
+        Mean reprojection errors (px).
+
+    Returns
+    -------
+    numpy.ndarray
+        ``"A"``, ``"B"`` or ``"C"`` per landmark.
+    """
     out = np.full(len(track), "C", dtype="<U1")
     for g in ("B", "A"):
         n, ang, err = GRADES[g]
@@ -43,7 +62,26 @@ def grade(track, tri_angle, error) -> np.ndarray:
 
 def triangulation_stats(obs: pd.DataFrame, X: np.ndarray, centers: dict[int, np.ndarray],
                         point_index: dict[int, int]) -> tuple[np.ndarray, np.ndarray]:
-    """Max pairwise ray angle (deg) and mean camera range (km) for every point."""
+    """Maximum pairwise ray angle and mean camera range of every point.
+
+    Parameters
+    ----------
+    obs : pandas.DataFrame
+        Track elements with ``point3d_id`` and ``image_id``.
+    X : numpy.ndarray
+        ``(N, 3)`` points, body-fixed (km).
+    centers : dict of int to numpy.ndarray
+        Camera centre per ``image_id``, body-fixed (km).
+    point_index : dict of int to int
+        Row of ``X`` per ``point3d_id``.
+
+    Returns
+    -------
+    max_angle_deg : numpy.ndarray
+        ``(N,)`` largest angle between two viewing rays of each point (deg).
+    mean_range_km : numpy.ndarray
+        ``(N,)`` mean camera-to-point distance (km).
+    """
     max_angle = np.zeros(len(X))
     mean_range = np.zeros(len(X))
     for pid, grp in obs.groupby("point3d_id")["image_id"]:
@@ -57,7 +95,23 @@ def triangulation_stats(obs: pd.DataFrame, X: np.ndarray, centers: dict[int, np.
 
 
 def pixel_frames(u, v, flip: str, camera: FramingCamera) -> dict[str, np.ndarray]:
-    """COLMAP pixel coords -> IK (0-based sample/line) and stored-FITS array indices."""
+    """Convert COLMAP pixel coordinates to IK and stored-FITS coordinates.
+
+    Parameters
+    ----------
+    u, v : array_like
+        COLMAP pixel coordinates (pixel centres at +0.5).
+    flip : str
+        Flip that was applied to the FITS arrays in :func:`~asteroid_colmap.preprocess.prepare`.
+    camera : FramingCamera
+        Supplies the image size.
+
+    Returns
+    -------
+    dict of numpy.ndarray
+        ``sample_ik``, ``line_ik``: 0-based IK sample and line (the PNG axes).
+        ``fits_col``, ``fits_row``: 0-based column and row of the FITS array as stored.
+    """
     s, l = np.asarray(u) - 0.5, np.asarray(v) - 0.5
     col = (camera.width - 1) - s if flip in ("lr", "rot180") else s
     row = (camera.height - 1) - l if flip in ("ud", "rot180") else l
@@ -65,13 +119,74 @@ def pixel_frames(u, v, flip: str, camera: FramingCamera) -> dict[str, np.ndarray
 
 
 def equal_area_cells(lat, lon, spacing_km: float, mean_radius_km: float) -> np.ndarray:
-    """Integer cell id on an (approximately) equal-area lat/lon grid of ``spacing_km``."""
+    """Cell id on an approximately equal-area latitude/longitude grid.
+
+    Latitude bands are ``spacing_km`` tall; each band is split into as many longitude
+    cells as fit its circumference at ``spacing_km`` (at least one).
+
+    Parameters
+    ----------
+    lat, lon : array_like
+        Planetocentric latitude and east longitude in [0, 360) (deg).
+    spacing_km : float
+        Nominal cell size (km).
+    mean_radius_km : float
+        Sphere radius used to convert km to degrees.
+
+    Returns
+    -------
+    numpy.ndarray
+        Integer id ``band * 100000 + column``.
+    """
     dlat = np.degrees(spacing_km / mean_radius_km)
     band = np.floor((np.asarray(lat) + 90.0) / dlat).astype(int)
     lat_c = np.radians(-90.0 + (band + 0.5) * dlat)
     n_lon = np.maximum(1, np.round(2 * np.pi * mean_radius_km * np.cos(lat_c) / spacing_km))
     col = np.floor(np.asarray(lon) / 360.0 * n_lon).astype(int)
     return band * 100000 + col
+
+
+def one_observation_per_image(model: SparseModel,
+                              camera: FramingCamera) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Keep one observation per point and image: the one closest to the projection.
+
+    COLMAP can put two nearby keypoints of one image, both within the reprojection
+    threshold, in the same track. Counting both inflates the track length and gives that
+    image two measurements of one landmark, so the one with the smaller reprojection error
+    is kept. For the points that lose an observation, ``track_length`` (distinct images)
+    and ``error`` (mean reprojection error, px) are recomputed from the kept ones; the
+    others keep COLMAP's values.
+
+    Parameters
+    ----------
+    model : SparseModel
+        COLMAP model.
+    camera : FramingCamera
+        Camera model, used to project the points.
+
+    Returns
+    -------
+    points, observations : pandas.DataFrame
+        Copies of ``model.points`` and ``model.observations``, the observations in their
+        original order.
+    """
+    obs = model.observations
+    images = model.images.set_index("image_id")
+    xyz = model.points.set_index("point3d_id")[["x", "y", "z"]]
+    err = np.empty(len(obs))
+    for image_id, idx in obs.groupby("image_id").indices.items():
+        grp = obs.iloc[idx]
+        R, t = images.loc[image_id, "R"], images.loc[image_id, ["tx", "ty", "tz"]].to_numpy(float)
+        uv = camera.project(xyz.loc[grp.point3d_id].to_numpy() @ R.T + t)
+        err[idx] = np.hypot(uv[:, 0] - grp.u.to_numpy(), uv[:, 1] - grp.v.to_numpy())
+    kept = (obs.assign(err=err).sort_values("err", kind="stable")
+            .drop_duplicates(["point3d_id", "image_id"]).sort_index())
+    points = model.points.copy()
+    changed = points.point3d_id.isin(obs.point3d_id[~obs.index.isin(kept.index)])
+    stats = kept[kept.point3d_id.isin(points.point3d_id[changed])].groupby("point3d_id").err
+    points.loc[changed, "track_length"] = points.point3d_id[changed].map(stats.size())
+    points.loc[changed, "error"] = points.point3d_id[changed].map(stats.mean())
+    return points, kept.drop(columns="err")
 
 
 def build_catalog(
@@ -86,8 +201,52 @@ def build_catalog(
     max_abs_height_km: float = 60.0,
     curated_spacing_km: float = 10.0,
 ) -> dict[str, pd.DataFrame]:
-    pts = model.points[model.points.track_length >= min_track].reset_index(drop=True)
-    obs = model.observations[model.observations.point3d_id.isin(pts.point3d_id)].reset_index(drop=True)
+    """Turn a georeferenced COLMAP model into the landmark catalog tables.
+
+    Each point keeps one observation per image (:func:`one_observation_per_image`).
+    Points seen in at least ``min_track`` images are mapped to the body-fixed frame,
+    graded (:func:`grade`) and flagged as outliers when ``|height| > max_abs_height_km``.
+    Landmarks are sorted non-outliers first, then by grade, track length (descending)
+    and reprojection error, and numbered ``LMK_000001``, ... in that order.
+
+    Parameters
+    ----------
+    model : SparseModel
+        COLMAP model.
+    sim : Similarity
+        Model -> body-fixed transform (:func:`~asteroid_colmap.georef.georeference`).
+    per_image : pandas.DataFrame
+        Per-image alignment residuals from the same call.
+    meta : pandas.DataFrame
+        Image metadata.
+    body : Body
+        Target body.
+    camera : FramingCamera
+        Camera model.
+    flip : str
+        Flip applied in the prepare step, for the FITS pixel frame.
+    min_track : int
+        Minimum track length of a landmark.
+    max_abs_height_km : float
+        Height above the ellipsoid beyond which a landmark is an outlier (km).
+    curated_spacing_km : float
+        Cell size of the curated subset (km).
+
+    Returns
+    -------
+    dict of pandas.DataFrame
+        ``landmarks``: ``landmark_id``, ``colmap_point_id``, ``x/y/z_km``, ``lat_deg``,
+        ``lon_deg``, ``radius_km``, ``ellipsoid_radius_km``, ``height_km``,
+        ``track_length``, ``reproj_error_px``, ``max_tri_angle_deg``, ``mean_range_km``,
+        ``gsd_km``, ``gray``, ``grade`` and ``outlier``.
+        ``curated``: the best non-outlier A/B landmark of each equal-area cell, scored
+        by ``track * min(angle, 30 deg) / max(error, 0.2 px)``, same columns.
+        ``observations``: see :func:`_observations`.
+        ``cameras``: see :func:`_cameras`.
+    """
+    points, observations = one_observation_per_image(model, camera)
+    pts = points[points.track_length >= min_track].reset_index(drop=True)
+    obs = observations[observations.point3d_id.isin(pts.point3d_id)].reset_index(drop=True)
     X_sfm = pts[["x", "y", "z"]].to_numpy()
     X = sim.apply(X_sfm)
     lat, lon, r = cart_to_latlonr(X)
@@ -120,7 +279,8 @@ def build_catalog(
                                     float(np.mean(body.radii_km)))
     good["score"] = (good.track_length * np.minimum(good.max_tri_angle_deg, 30.0)
                      / np.maximum(good.reproj_error_px, 0.2))
-    curated = (good.sort_values("score", ascending=False).drop_duplicates("cell")
+    # stable sort: a tie goes to the better-ranked (lower) landmark ID
+    curated = (good.sort_values("score", ascending=False, kind="stable").drop_duplicates("cell")
                .sort_values("landmark_id").drop(columns=["cell", "score"]).reset_index(drop=True))
 
     observations = _observations(obs, lm, X_sfm, pts, images, meta, body, camera, flip)
@@ -129,6 +289,14 @@ def build_catalog(
 
 
 def _observations(obs, lm, X_sfm, pts, images, meta, body, camera, flip) -> pd.DataFrame:
+    """One row per landmark measurement, sorted by ``landmark_id`` and ``image``.
+
+    Columns: ``landmark_id``, ``image``, ``u``, ``v`` (COLMAP px); the
+    :func:`pixel_frames` columns; ``residual_u/v_px`` (COLMAP projection minus
+    measurement); ``label_pred_du/dv_px`` (projection with the label pose minus
+    measurement); and ``emission_deg`` / ``incidence_deg`` relative to the ellipsoid
+    normal.
+    """
     ids = dict(zip(lm.colmap_point_id, lm.landmark_id))
     xyz_bf = lm.set_index("colmap_point_id")[["x_km", "y_km", "z_km"]]
     row_of = dict(zip(pts.point3d_id, range(len(pts))))
@@ -164,6 +332,15 @@ def _observations(obs, lm, X_sfm, pts, images, meta, body, camera, flip) -> pd.D
 
 
 def _cameras(meta, per_image, observations) -> pd.DataFrame:
+    """One row per input image, registered or not.
+
+    Columns: ``image``, ``sequence``, ``utc``, ``registered``, ``observation_id``,
+    ``exposure_ms``, ``range_km``, ``pixel_scale_km``, ``subsc_lat_deg``,
+    ``subsc_lon_deg`` (from the rotation model), ``phase_deg``,
+    ``rotation_model_check_deg``; ``num_landmarks`` (0 if unregistered),
+    ``reproj_rms_px`` and the median label offsets ``label_offset_u/v_px``; then the
+    :func:`~asteroid_colmap.georef.georeference` per-image columns.
+    """
     keep = ["image", "sequence", "utc", "observation_id", "exposure_ms", "range_km",
             "pixel_scale_km", "subsc_lat_deg", "subsc_lon_model_deg", "phase_deg",
             "rotation_model_check_deg"]
@@ -185,6 +362,18 @@ def _cameras(meta, per_image, observations) -> pd.DataFrame:
 
 
 def write_ply(path: Path, lm: pd.DataFrame) -> None:
+    """Write the landmarks as an ASCII PLY point cloud.
+
+    Each vertex has ``x``, ``y``, ``z`` (km, body-fixed), a grey RGB colour from
+    ``gray`` and a ``height_km`` scalar property.
+
+    Parameters
+    ----------
+    path : pathlib.Path
+        Output file.
+    lm : pandas.DataFrame
+        Landmarks table.
+    """
     header = "\n".join([
         "ply", "format ascii 1.0", "comment asteroid-colmap landmarks, body-fixed km",
         f"element vertex {len(lm)}", "property float x", "property float y", "property float z",
@@ -198,6 +387,34 @@ def write_ply(path: Path, lm: pd.DataFrame) -> None:
 
 def summarize(cat: dict[str, pd.DataFrame], align: dict, sim: Similarity, recon: dict,
               prep: dict, curated_spacing_km: float | None = None) -> dict:
+    """Catalog statistics for ``summary.json``.
+
+    Parameters
+    ----------
+    cat : dict of pandas.DataFrame
+        Output of :func:`build_catalog`.
+    align : dict
+        Alignment summary from :func:`~asteroid_colmap.georef.georeference`.
+    sim : Similarity
+        Model -> body-fixed transform.
+    recon : dict
+        Output of :func:`~asteroid_colmap.reconstruct.reconstruct`.
+    prep : dict
+        Output of :func:`~asteroid_colmap.preprocess.prepare`.
+    curated_spacing_km : float, optional
+        Recorded as is.
+
+    Returns
+    -------
+    dict
+        ``num_input_images``, ``num_registered_images``, ``registered_by_sequence``,
+        ``num_landmarks``, ``num_curated_landmarks``, ``curated_spacing_km``,
+        ``num_outliers``, ``grades``, ``num_observations``; medians over non-outliers
+        ``median_track_length``, ``median_reproj_error_px``, ``median_tri_angle_deg``;
+        ``height_km_p05_p50_p95``, ``lat_range_deg``,
+        ``label_pointing_offset_median_px``, ``alignment``, ``similarity``,
+        ``image_flip``, ``colmap`` and ``selected_model``.
+    """
     lm, cams, obs = cat["landmarks"], cat["cameras"], cat["observations"]
     good = lm[~lm.outlier]
     return {
@@ -226,6 +443,18 @@ def summarize(cat: dict[str, pd.DataFrame], align: dict, sim: Similarity, recon:
 
 
 def write_catalog(out_dir: Path, cat: dict[str, pd.DataFrame]) -> None:
+    """Write the catalog tables and the point cloud.
+
+    Writes ``landmarks.csv``, ``landmarks_curated.csv``, ``observations.csv``,
+    ``cameras.csv`` and ``landmarks.ply`` (see the module docstring).
+
+    Parameters
+    ----------
+    out_dir : pathlib.Path
+        Output directory; created if needed.
+    cat : dict of pandas.DataFrame
+        Output of :func:`build_catalog`.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
     cat["landmarks"].to_csv(out_dir / "landmarks.csv", index=False, float_format="%.6f")
     cat["curated"].to_csv(out_dir / "landmarks_curated.csv", index=False, float_format="%.6f")
@@ -237,8 +466,26 @@ def write_catalog(out_dir: Path, cat: dict[str, pd.DataFrame]) -> None:
 
 
 def compare_catalogs(dir_a: Path, dir_b: Path, min_shared: int = 3) -> dict:
-    """Match the landmarks of two catalogs built from the same feature database (e.g. the
-    label-poses and incremental modes) through shared keypoints and compare positions."""
+    """Compare two catalogs built from the same feature database.
+
+    Typical use is the label-poses and incremental modes. Landmarks are matched through
+    shared keypoints (same image and ``u, v`` to 0.01 px); each landmark is paired at
+    most once, with the partner it shares most keypoints with.
+
+    Parameters
+    ----------
+    dir_a, dir_b : pathlib.Path
+        Catalog directories with ``observations.csv`` and ``landmarks.csv``.
+    min_shared : int
+        Minimum number of shared keypoints for a match.
+
+    Returns
+    -------
+    dict
+        ``num_landmarks`` (both catalogs) and ``num_matched``; if any matched, also
+        ``distance_km_p50_p90_p99``, ``mean_offset_km`` (a - b),
+        ``distance_minus_offset_km_p50_p90`` and ``height_difference_km_p50_absp90``.
+    """
     cols = ["landmark_id", "image", "u", "v"]
     obs = []
     for d in (dir_a, dir_b):

@@ -26,19 +26,77 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class Similarity:
+    """Similarity transform ``X_bf = scale R X_sfm + t`` from the COLMAP to the body frame.
+
+    Attributes
+    ----------
+    scale : float
+        Scale factor (km per COLMAP model unit).
+    R : numpy.ndarray
+        ``(3, 3)`` proper rotation.
+    t : numpy.ndarray
+        ``(3,)`` translation (km).
+    """
     scale: float
     R: np.ndarray
     t: np.ndarray
 
     def apply(self, X: np.ndarray) -> np.ndarray:
+        """Map points from the COLMAP model frame to the body-fixed frame.
+
+        Parameters
+        ----------
+        X : array_like
+            ``(N, 3)`` or ``(3,)`` points in model units.
+
+        Returns
+        -------
+        numpy.ndarray
+            Body-fixed points (km), same shape as ``X``.
+        """
         return self.scale * np.asarray(X) @ self.R.T + self.t
 
     def as_dict(self) -> dict:
+        """JSON-ready form of the transform.
+
+        Returns
+        -------
+        dict
+            ``scale_km_per_unit``, ``R`` (nested lists) and ``t_km``.
+        """
         return {"scale_km_per_unit": self.scale, "R": self.R.tolist(), "t_km": self.t.tolist()}
 
 
 def robust_similarity(src, dst, n_iter: int = 5, k_sigma: float = 4.0, floor: float = 1.0):
-    """Umeyama fit with iterative rejection of residuals > max(k_sigma * 1.4826 MAD, floor)."""
+    """Fit a similarity transform with iterative outlier rejection.
+
+    Each pass fits :func:`~asteroid_colmap.geometry.umeyama` to the current inliers, then
+    keeps the points whose residual is at most ``max(median + k_sigma * 1.4826 * MAD,
+    floor)``, with the median and MAD of the current inliers. It stops after ``n_iter``
+    passes, when the inlier set stops changing, or when fewer than 3 points would remain.
+
+    Parameters
+    ----------
+    src, dst : numpy.ndarray
+        ``(N, 3)`` corresponding points, ``dst ~ s R src + t``.
+    n_iter : int
+        Maximum number of fit-and-reject passes.
+    k_sigma : float
+        Rejection threshold in robust standard deviations.
+    floor : float
+        Lower bound of the rejection threshold, in ``dst`` units (km), so that a very
+        tight fit does not reject good points.
+
+    Returns
+    -------
+    sim : Similarity
+        The last fit.
+    res : numpy.ndarray
+        ``(N,)`` residual norm of every point under ``sim``, in ``dst`` units.
+    keep : numpy.ndarray
+        ``(N,)`` boolean inlier mask. After convergence it is the set ``sim`` was fitted
+        to; if ``n_iter`` runs out, it is the set selected by the last pass.
+    """
     keep = np.ones(len(src), bool)
     for _ in range(n_iter):
         s, R, t = umeyama(src[keep], dst[keep])
@@ -52,9 +110,24 @@ def robust_similarity(src, dst, n_iter: int = 5, k_sigma: float = 4.0, floor: fl
 
 
 def pointing_offsets(R_est: np.ndarray, R_ref: np.ndarray, camera: FramingCamera):
-    """Offset of the estimated boresight in the reference image (px) and twist (deg).
+    """Boresight offset and twist of an estimated attitude relative to a reference one.
 
-    ``R_*`` map body-fixed vectors into the camera frame.
+    Parameters
+    ----------
+    R_est, R_ref : numpy.ndarray
+        ``(3, 3)`` rotations that map body-fixed vectors into the camera frame: the
+        estimate (e.g. COLMAP) and the reference (e.g. the label).
+    camera : FramingCamera
+        Supplies ``fx`` and ``fy`` to express the offset in pixels.
+
+    Returns
+    -------
+    du, dv : float
+        Position of the estimated boresight in the reference image relative to the
+        principal point (px, distortion ignored).
+    twist_deg : float
+        Angle of the estimated camera x axis about the boresight, seen in the reference
+        camera frame (deg).
     """
     b = R_ref @ R_est.T @ np.array([0.0, 0.0, 1.0])  # estimated boresight in the reference frame
     du = camera.fx * b[0] / b[2]
@@ -65,7 +138,44 @@ def pointing_offsets(R_est: np.ndarray, R_ref: np.ndarray, camera: FramingCamera
 
 
 def georeference(model: SparseModel, meta: pd.DataFrame, body: Body, camera: FramingCamera):
-    """Returns (similarity, per-image DataFrame of residuals, summary dict)."""
+    """Tie a COLMAP model to the body-fixed frame and check it against the label attitudes.
+
+    A robust similarity (:func:`robust_similarity`) is fitted between the COLMAP camera
+    centres and the label spacecraft positions. Each aligned COLMAP rotation is then
+    compared with the label attitude; a median disagreement above 5 deg flags a mirrored
+    or depth-reversed model and logs a warning.
+
+    Parameters
+    ----------
+    model : SparseModel
+        COLMAP model; only images whose name appears in ``meta`` are used.
+    meta : pandas.DataFrame
+        Image metadata (:func:`~asteroid_colmap.metadata.build_metadata`).
+    body : Body
+        Target body (rotation model).
+    camera : FramingCamera
+        Camera model, for the boresight offsets in pixels.
+
+    Returns
+    -------
+    sim : Similarity
+        Model-to-body transform (km).
+    per_image : pandas.DataFrame
+        One row per aligned image: ``image``, ``image_id``, aligned COLMAP centre
+        ``sfm_x/y/z_km``, label position ``label_x/y/z_km``, ``position_residual_km``,
+        ``used_in_fit``, ``attitude_residual_deg``, ``boresight_du_px``,
+        ``boresight_dv_px``, ``twist_deg``, and ``sequence``, ``utc`` and ``range_km``
+        from ``meta``.
+    summary : dict
+        ``num_aligned_images``, ``num_used_in_fit``, ``scale_km_per_unit``,
+        ``position_rms_km`` (inliers only), ``position_max_km``, ``attitude_median_deg``,
+        ``attitude_max_deg``, ``boresight_median_px`` and ``mirrored_or_reversed``.
+
+    Raises
+    ------
+    RuntimeError
+        If fewer than 3 registered images have label geometry.
+    """
     lookup = meta.set_index("image")
     images = model.images[model.images["name"].isin(lookup.index)].reset_index(drop=True)
     if len(images) < 3:

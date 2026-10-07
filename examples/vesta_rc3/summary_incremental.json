@@ -5,63 +5,63 @@
     "RC3": 65,
     "RC3B": 65
   },
-  "num_landmarks": 109821,
-  "num_curated_landmarks": 7517,
+  "num_landmarks": 94331,
+  "num_curated_landmarks": 7495,
   "curated_spacing_km": 10.0,
-  "num_outliers": 7,
+  "num_outliers": 6,
   "grades": {
-    "A": 43776,
-    "B": 46316,
-    "C": 19729
+    "A": 34364,
+    "B": 40875,
+    "C": 19092
   },
-  "num_observations": 1050617,
-  "median_track_length": 7.0,
-  "median_reproj_error_px": 0.23871835121411522,
-  "median_tri_angle_deg": 34.95891107791351,
+  "num_observations": 829685,
+  "median_track_length": 6.0,
+  "median_reproj_error_px": 0.23539353382068756,
+  "median_tri_angle_deg": 34.65570560368806,
   "height_km_p05_p50_p95": [
-    -9.717,
-    -0.874,
-    8.214
+    -9.746,
+    -0.858,
+    8.252
   ],
   "lat_range_deg": [
-    -89.97002549365017,
-    73.73928261141506
+    -89.90882812607288,
+    80.59167685932624
   ],
-  "label_pointing_offset_median_px": 2.3794200994629175,
+  "label_pointing_offset_median_px": 2.411781826588066,
   "alignment": {
     "num_aligned_images": 130,
     "num_used_in_fit": 130,
-    "scale_km_per_unit": 1511.3150356046044,
-    "position_rms_km": 2.1045102510666656,
-    "position_max_km": 3.7839078643923423,
-    "attitude_median_deg": 0.02174917976562689,
-    "attitude_max_deg": 0.05293304754651838,
-    "boresight_median_px": 3.515949364134813,
+    "scale_km_per_unit": 1523.8965897929593,
+    "position_rms_km": 2.1108672004402256,
+    "position_max_km": 4.000847792763842,
+    "attitude_median_deg": 0.0206787969811744,
+    "attitude_max_deg": 0.05541027880409147,
+    "boresight_median_px": 3.5374881885786813,
     "mirrored_or_reversed": false
   },
   "similarity": {
-    "scale_km_per_unit": 1511.3150356046044,
+    "scale_km_per_unit": 1523.8965897929593,
     "R": [
       [
-        -0.24049384870033777,
-        -0.1840325169341667,
-        -0.9530449839583519
+        -0.08775863921160344,
+        -0.32906788772553536,
+        -0.9402195203842469
       ],
       [
-        0.6452085544697885,
-        -0.7638529987386512,
-        -0.015313966075996052
+        0.6596647058522519,
+        -0.7264423588425553,
+        0.19267582913309797
       ],
       [
-        -0.7251680012082063,
-        -0.6185956910849335,
-        0.30244130173448297
+        -0.7464187143263422,
+        -0.6033206647771312,
+        0.28082606423957707
       ]
     ],
     "t_km": [
-      79.12869518393353,
-      -66.10291983339653,
-      -582.9702891645773
+      76.8797534367551,
+      -59.46863573415402,
+      -589.5303718878284
     ]
   },
   "image_flip": "ud",

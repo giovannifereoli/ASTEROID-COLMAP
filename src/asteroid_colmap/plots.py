@@ -1,72 +1,222 @@
-"""Figures for every pipeline stage (written to ``<workdir>/plots``)."""
+"""Figures for every pipeline stage (written to ``<workdir>/plots``).
+
+Every public ``plot_*`` function draws one figure, saves it as a PNG in
+:attr:`Workspace.plots` and returns the path. The house style is applied with
+:func:`matplotlib.pyplot.rc_context` inside each call, so importing this module or calling a
+plot function never changes global matplotlib settings, which keeps notebooks clean. The
+backend is not forced either: the command-line interface selects ``Agg`` itself.
+
+Figures
+-------
+01 montage, 02 geometry, 03 orientation check, 04 features, 05 co-visibility,
+06 alignment, 07 globe views, 08 landmark maps, 09 quality, 10 radius vs latitude,
+11 landmark chips, plus ``pointcloud.html`` (interactive, needs plotly).
+"""
 
 from __future__ import annotations
 
+import functools
 import logging
 from pathlib import Path
 
-import matplotlib
+import matplotlib.patheffects as pe
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from matplotlib.colors import LinearSegmentedColormap, LogNorm, TwoSlopeNorm
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
+from matplotlib.ticker import FixedLocator, NullLocator, StrMethodFormatter
+from PIL import Image
 
-matplotlib.use("Agg")
-import matplotlib.dates as mdates  # noqa: E402
-import matplotlib.pyplot as plt  # noqa: E402
-import numpy as np  # noqa: E402
-import pandas as pd  # noqa: E402
-from matplotlib.colors import LinearSegmentedColormap, LogNorm, TwoSlopeNorm  # noqa: E402
-from matplotlib.lines import Line2D  # noqa: E402
-from matplotlib.ticker import (FixedLocator, NullLocator, ScalarFormatter,  # noqa: E402
-                               StrMethodFormatter)
-from PIL import Image  # noqa: E402
-
-from .camera import get_camera  # noqa: E402
-from .config import Dataset  # noqa: E402
-from .metadata import load_metadata  # noqa: E402
-from .workspace import Workspace  # noqa: E402
+from .camera import get_camera
+from .catalog import GRADES
+from .config import Dataset
+from .geometry import ellipsoid_radius, latlon_to_unit
+from .metadata import load_metadata
+from .workspace import Workspace
 
 log = logging.getLogger(__name__)
 
 # palette (validated: scripts/validate_palette.js, light mode, all pairs for the first three)
 SURFACE, INK, INK2, MUTED, GRID, AXIS = "#fcfcfb", "#0b0b0b", "#52514e", "#898781", "#e1e0d9", "#c3c2b7"
 CATEGORICAL = ["#2a78d6", "#eb6834", "#1baf7a"]
-SEQUENTIAL = LinearSegmentedColormap.from_list(
-    "seq_blue", ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95", "#0d366b"])
-DIVERGING = LinearSegmentedColormap.from_list(
-    "div_blue_red", ["#0d366b", "#1c5cab", "#3987e5", "#9ec5f4", "#f0efec",
-                     "#f2a3a2", "#e34948", "#b83232", "#7a1f1f"])
+SEQUENTIAL_STOPS = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95", "#0d366b"]
+DIVERGING_STOPS = ["#0d366b", "#1c5cab", "#3987e5", "#9ec5f4", "#f0efec",
+                   "#f2a3a2", "#e34948", "#b83232", "#7a1f1f"]
+SEQUENTIAL = LinearSegmentedColormap.from_list("seq_blue", SEQUENTIAL_STOPS)
+# the same ramp without its lightest step, for small marks drawn on the light surface
+SEQUENTIAL_MARKS = LinearSegmentedColormap.from_list("seq_blue_marks", SEQUENTIAL_STOPS[1:])
+DIVERGING = LinearSegmentedColormap.from_list("div_blue_red", DIVERGING_STOPS)
+# grades are ordered (A best), so they take steps of the sequential ramp, darkest = best
+GRADE_COLORS = {"A": "#0d366b", "B": "#3987e5", "C": "#9ec5f4"}
 DPI = 150
 
+STYLE = {
+    "figure.facecolor": SURFACE, "axes.facecolor": SURFACE, "savefig.facecolor": SURFACE,
+    "axes.edgecolor": AXIS, "axes.labelcolor": INK2, "axes.titlecolor": INK,
+    "axes.titlesize": 11, "axes.titleweight": "bold", "axes.titlelocation": "left",
+    "axes.labelsize": 9.5, "axes.grid": True, "axes.axisbelow": True,
+    "axes.spines.top": False, "axes.spines.right": False,
+    "grid.color": GRID, "grid.linewidth": 0.7, "grid.linestyle": "-",
+    "xtick.color": AXIS, "ytick.color": AXIS, "xtick.labelcolor": INK2,
+    "ytick.labelcolor": INK2, "xtick.labelsize": 8.5, "ytick.labelsize": 8.5,
+    "text.color": INK, "legend.frameon": False, "legend.fontsize": 9,
+    "lines.linewidth": 1.5, "font.family": "sans-serif",
+    "figure.titlesize": 13, "figure.titleweight": "bold",
+}
+"""matplotlib rcParams of the house style, applied by :func:`_styled`."""
 
-def _style():
-    plt.rcParams.update({
-        "figure.facecolor": SURFACE, "axes.facecolor": SURFACE, "savefig.facecolor": SURFACE,
-        "axes.edgecolor": AXIS, "axes.labelcolor": INK2, "axes.titlecolor": INK,
-        "axes.titlesize": 11, "axes.titleweight": "bold", "axes.titlelocation": "left",
-        "axes.labelsize": 9.5, "axes.grid": True, "axes.axisbelow": True,
-        "axes.spines.top": False, "axes.spines.right": False,
-        "grid.color": GRID, "grid.linewidth": 0.7, "grid.linestyle": "-",
-        "xtick.color": AXIS, "ytick.color": AXIS, "xtick.labelcolor": INK2,
-        "ytick.labelcolor": INK2, "xtick.labelsize": 8.5, "ytick.labelsize": 8.5,
-        "text.color": INK, "legend.frameon": False, "legend.fontsize": 9,
-        "lines.linewidth": 1.5, "font.family": "sans-serif",
-        "figure.titlesize": 13, "figure.titleweight": "bold",
-    })
+
+def _styled(func):
+    """Run a plotting function inside ``plt.rc_context(STYLE)``.
+
+    Parameters
+    ----------
+    func : callable
+        Function that creates, saves and closes its figures.
+
+    Returns
+    -------
+    callable
+        Wrapped function with the same signature and docstring.
+    """
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        """Call ``func`` with the house style active."""
+        with plt.rc_context(STYLE):
+            return func(*args, **kwargs)
+    return wrapper
 
 
 def _seq_colors(sequences) -> dict[str, str]:
-    return {s: CATEGORICAL[i % len(CATEGORICAL)] for i, s in enumerate(sequences)}
+    """Assign a categorical colour to each sequence, in fixed order.
+
+    Parameters
+    ----------
+    sequences : iterable of str
+        Sequence names in display order (for example ``RC3``, ``RC3B``).
+
+    Returns
+    -------
+    dict
+        ``{sequence: hex colour}``. The first three sequences take the CATEGORICAL hues in
+        order; any further sequence is drawn in the muted grey instead of a cycled hue.
+    """
+    names = list(sequences)
+    return {s: CATEGORICAL[i] if i < len(CATEGORICAL) else MUTED for i, s in enumerate(names)}
 
 
-def _legend_handles(colors: dict[str, str], marker="o"):
+def _legend_handles(colors: dict[str, str], marker="o", labels: dict[str, str] | None = None):
+    """Build legend proxies for a ``{name: colour}`` mapping.
+
+    Parameters
+    ----------
+    colors : dict
+        ``{name: colour}``, in legend order.
+    marker : str or None
+        Marker of each proxy; ``None`` draws a line instead.
+    labels : dict, optional
+        ``{name: label text}``; defaults to the names themselves.
+
+    Returns
+    -------
+    list of matplotlib.lines.Line2D
+    """
+    labels = labels or {}
     return [Line2D([], [], color=c, marker=marker, linestyle="-" if marker is None else "",
-                   markersize=7, linewidth=1.5, label=s) for s, c in colors.items()]
+                   markersize=7, linewidth=1.5, label=labels.get(s, s)) for s, c in colors.items()]
 
 
-def _time_axis(ax):
-    ax.xaxis.set_major_locator(mdates.HourLocator(byhour=range(0, 24, 4)))
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M\n%d %b %Y"))
+def _time_col(df: pd.DataFrame) -> str:
+    """Name of the timestamp column: ``time`` (metadata) or ``utc`` (cameras.csv)."""
+    return "time" if "time" in df else "utc"
+
+
+def _hours_since_start(df: pd.DataFrame, time_col: str | None = None) -> pd.Series:
+    """Elapsed time of each row since the first image of its sequence.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Table with a ``sequence`` column and a timestamp column.
+    time_col : str, optional
+        Timestamp column; defaults to :func:`_time_col`.
+
+    Returns
+    -------
+    pandas.Series
+        Hours since the sequence start, aligned with ``df``.
+    """
+    t = pd.to_datetime(df[time_col or _time_col(df)])
+    return (t - t.groupby(df["sequence"]).transform("min")).dt.total_seconds() / 3600.0
+
+
+def _seq_labels(df: pd.DataFrame, time_col: str | None = None) -> dict[str, str]:
+    """Legend labels that name each sequence and its start time.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Table with a ``sequence`` column and a timestamp column.
+    time_col : str, optional
+        Timestamp column; defaults to :func:`_time_col`.
+
+    Returns
+    -------
+    dict
+        ``{sequence: "RC3 (from 24 Jul 2011 06:00 UTC)"}``.
+    """
+    t = pd.to_datetime(df[time_col or _time_col(df)])
+    t0 = t.groupby(df["sequence"], sort=False).min()
+    return {s: f"{s}  (from {v:%d %b %Y %H:%M} UTC)" for s, v in t0.items()}
+
+
+def _break_wraps(x, y, jump: float = 180.0):
+    """Insert NaN gaps where a longitude series wraps around 0/360°.
+
+    Parameters
+    ----------
+    x, y : array_like
+        Longitude (degrees) and the matching ordinate.
+    jump : float
+        Smallest step in ``x`` that counts as a wrap.
+
+    Returns
+    -------
+    tuple of numpy.ndarray
+        ``(x, y)`` with NaN inserted before every wrap, so a line plot does not draw
+        a segment across the whole map.
+    """
+    x, y = np.asarray(x, float), np.asarray(y, float)
+    cut = np.flatnonzero(np.abs(np.diff(x)) > jump) + 1
+    return np.insert(x, cut, np.nan), np.insert(y, cut, np.nan)
+
+
+def _polar_night(subsolar_lat_deg) -> tuple[float, float] | None:
+    """Latitude band that never sees the Sun during a full rotation.
+
+    Parameters
+    ----------
+    subsolar_lat_deg : array_like
+        Sub-solar latitudes of the images (degrees).
+
+    Returns
+    -------
+    tuple of float or None
+        ``(low, high)`` latitude limits in degrees, or ``None`` when the Sun is within 1°
+        of the equator or no latitude is available.
+    """
+    s = np.asarray(subsolar_lat_deg, float)
+    s = s[np.isfinite(s)]
+    if s.size == 0 or abs(s.mean()) < 1.0:
+        return None
+    m = float(s.mean())
+    return (90.0 + m, 90.0) if m < 0 else (-90.0, -90.0 + m)
 
 
 def _save(fig, path: Path) -> Path:
+    """Save a figure at :data:`DPI`, close it and return the path."""
     fig.savefig(path, dpi=DPI, bbox_inches="tight")
     plt.close(fig)
     log.info("wrote %s", path)
@@ -74,6 +224,11 @@ def _save(fig, path: Path) -> Path:
 
 
 def _suptitle(fig, title: str, subtitle: str | None = None):
+    """Write a left-aligned bold title and an optional subtitle at the top of a figure.
+
+    The title sits just above the figure area (``bbox_inches="tight"`` keeps it), and the
+    subtitle hangs just below the top edge, so callers leave about 0.4 inch free there.
+    """
     fig.text(0.01, 1.0, title, ha="left", va="bottom", fontsize=13, weight="bold", color=INK,
              transform=fig.transFigure)
     if subtitle:
@@ -81,9 +236,59 @@ def _suptitle(fig, title: str, subtitle: str | None = None):
                  transform=fig.transFigure)
 
 
+def _log_ticks(cb, vmin: float, vmax: float):
+    """Put plain-number ticks (1, 2, 5, 10, ...) on a logarithmic colorbar.
+
+    Parameters
+    ----------
+    cb : matplotlib.colorbar.Colorbar
+        Colorbar whose long axis is logarithmic.
+    vmin, vmax : float
+        Data range of the colorbar; the tick density adapts to the number of decades.
+    """
+    decades = np.log10(max(vmax, 1e-9) / max(vmin, 1e-9))
+    mantissas = (1, 2, 3, 5) if decades <= 1.5 else (1, 2, 5) if decades <= 2.2 else \
+        (1, 3) if decades <= 3 else (1,)
+    ticks = [m * 10.0 ** e for e in range(-2, 8) for m in mantissas]
+    ticks = [t for t in ticks if vmin * 0.999 <= t <= vmax * 1.001]
+    axis = cb.ax.yaxis if cb.orientation == "vertical" else cb.ax.xaxis
+    axis.set_major_locator(FixedLocator(ticks))
+    axis.set_major_formatter(StrMethodFormatter("{x:,g}"))
+    axis.set_minor_locator(NullLocator())
+
+
+def _colorbar(fig, mappable, label: str, **kw):
+    """Add a colorbar with the house outline colour and a label; ``kw`` go to ``fig.colorbar``."""
+    cb = fig.colorbar(mappable, **kw)
+    cb.set_label(label)
+    cb.outline.set_edgecolor(AXIS)
+    return cb
+
+
 # ---------------------------------------------------------------- inputs & geometry
 
+@_styled
 def plot_montage(ws: Workspace, meta: pd.DataFrame, colors, n: int = 24, ncols: int = 8) -> Path:
+    """Figure 01: a grid of prepared input images, evenly spaced in time.
+
+    Parameters
+    ----------
+    ws : Workspace
+        Workspace with prepared PNGs in ``ws.images``.
+    meta : pandas.DataFrame
+        Image metadata from :func:`~asteroid_colmap.metadata.load_metadata`.
+    colors : dict
+        ``{sequence: colour}`` from :func:`_seq_colors`.
+    n : int
+        Maximum number of images shown.
+    ncols : int
+        Images per row.
+
+    Returns
+    -------
+    pathlib.Path
+        ``plots/01_montage.png``.
+    """
     idx = np.unique(np.linspace(0, len(meta) - 1, min(n, len(meta))).round().astype(int))
     nrows = int(np.ceil(len(idx) / ncols))
     fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 1.7, nrows * 2.15 + 0.5))
@@ -105,36 +310,111 @@ def plot_montage(ws: Workspace, meta: pd.DataFrame, colors, n: int = 24, ncols: 
     return _save(fig, ws.plots / "01_montage.png")
 
 
+@_styled
 def plot_geometry(ws: Workspace, meta: pd.DataFrame, colors) -> Path:
-    panels = [("subsc_lon_model_deg", "Sub-spacecraft longitude (°E)"),
-              ("subsc_lat_deg", "Sub-spacecraft latitude (°)"),
-              ("range_km", "Range to Vesta centre (km)"),
-              ("phase_deg", "Phase angle (°)")]
-    fig, axes = plt.subplots(2, 2, figsize=(11, 6.2), sharex=True)
-    for ax, (col, label) in zip(axes.flat, panels):
-        for seq, grp in meta.groupby("sequence", sort=False):
-            ax.plot(grp["time"], grp[col], "o", color=colors[seq], markersize=4)
-        ax.set_title(label, fontsize=10)
-        _time_axis(ax)
-    axes[0, 0].set_ylim(0, 360)
-    axes[0, 0].set_yticks(range(0, 361, 90))
-    for ax in axes[1]:
-        ax.set_xlabel("UTC")
-    _suptitle(fig, "Observation geometry", "Two full rotations of Vesta seen from ~5,500 km; "
-              "RC3B views the southern hemisphere at low phase")
-    fig.legend(handles=_legend_handles(colors), loc="upper right", bbox_to_anchor=(0.99, 1.04),
-               ncol=len(colors))
-    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    """Figure 02: sub-spacecraft ground track, range and phase angle.
+
+    The left panel maps the sub-spacecraft point of every image on a latitude/longitude
+    grid and shades the polar-night band; the right panels show range and phase against
+    hours since the start of each sequence, so the sequences overlay.
+
+    Parameters
+    ----------
+    ws : Workspace
+        Output workspace.
+    meta : pandas.DataFrame
+        Image metadata (:func:`~asteroid_colmap.metadata.load_metadata`) or the catalog's
+        ``cameras.csv``. Needs ``sequence``, ``time`` or ``utc``, ``subsc_lat_deg``,
+        ``subsc_lon_model_deg`` or ``subsc_lon_deg``, ``range_km`` and ``phase_deg``; the
+        polar-night band is drawn only when ``subsolar_lat_deg`` is present.
+    colors : dict
+        ``{sequence: colour}`` from :func:`_seq_colors`.
+
+    Returns
+    -------
+    pathlib.Path
+        ``plots/02_geometry.png``.
+    """
+    tcol = _time_col(meta)
+    lon_col = "subsc_lon_model_deg" if "subsc_lon_model_deg" in meta else "subsc_lon_deg"
+    m = meta.assign(hours=_hours_since_start(meta, tcol), lon=meta[lon_col] % 360)
+    m = m.sort_values(["sequence", tcol])
+    fig = plt.figure(figsize=(14, 5.6), layout="constrained")
+    fig.get_layout_engine().set(rect=(0, 0, 1, 0.93), w_pad=0.08, wspace=0.06)
+    gs = fig.add_gridspec(2, 2, width_ratios=(1.85, 1))
+    ax_t = fig.add_subplot(gs[:, 0])
+    ax_r = fig.add_subplot(gs[0, 1])
+    ax_p = fig.add_subplot(gs[1, 1], sharex=ax_r)
+
+    night = _polar_night(meta["subsolar_lat_deg"]) if "subsolar_lat_deg" in meta else None
+    if night:
+        ax_t.axhspan(*night, color=GRID, lw=0, zorder=0)
+        hemi = "north" if night[1] == 90 else "south"
+        edge = night[0] if hemi == "north" else night[1]
+        ax_t.text(4, np.mean(night), f"polar night ({hemi} of {abs(edge):.0f}°"
+                  f"{'N' if hemi == 'north' else 'S'})", va="center", fontsize=8.5, color=INK2)
+    for seq, grp in m.groupby("sequence", sort=False):
+        x, y = _break_wraps(grp["lon"], grp["subsc_lat_deg"])
+        ax_t.plot(x, y, "-", color=colors[seq], lw=1.0)
+        ax_t.plot(grp["lon"], grp["subsc_lat_deg"], "o", color=colors[seq], markersize=3.5)
+        for ax, col in ((ax_r, "range_km"), (ax_p, "phase_deg")):
+            ax.plot(grp["hours"], grp[col], "o-", color=colors[seq], markersize=3.5, lw=1.0)
+    ax_t.set_xlim(0, 360)
+    ax_t.set_ylim(-90, 90)
+    ax_t.set_xticks(range(0, 361, 30))
+    ax_t.set_yticks(range(-90, 91, 30))
+    ax_t.set_aspect("equal")
+    ax_t.set_xlabel("east longitude (°)")
+    ax_t.set_ylabel("planetocentric latitude (°)")
+    ax_t.set_title("Sub-spacecraft point", fontsize=10)
+    ax_r.set_title("Range to Vesta centre (km)", fontsize=10)
+    ax_p.set_title("Phase angle (°)", fontsize=10)
+    ax_r.tick_params(labelbottom=False)
+    ax_p.set_xlabel("hours since sequence start")
+
+    parts = []
+    for seq, grp in m.groupby("sequence", sort=False):
+        lat, ph = grp["subsc_lat_deg"], grp["phase_deg"]
+        parts.append(f"{seq} {lat.min():+.0f}° to {lat.max():+.0f}° latitude at "
+                     f"{ph.min():.0f}–{ph.max():.0f}° phase over {grp['hours'].max():.1f} h")
+    _suptitle(fig, "Observation geometry",
+              f"{len(m)} images from {m.range_km.min():,.0f}–{m.range_km.max():,.0f} km; "
+              + "; ".join(parts) + ". Sub-spacecraft longitude falls as Vesta rotates.")
+    fig.legend(handles=_legend_handles(colors, labels=_seq_labels(m, tcol)), loc="lower right",
+               bbox_to_anchor=(0.99, 1.0), ncol=len(colors))
     return _save(fig, ws.plots / "02_geometry.png")
 
 
+@_styled
 def plot_orientation(ws: Workspace, ds: Dataset, meta: pd.DataFrame, prep: dict) -> Path | None:
+    """Figure 03: observed body silhouettes against the label-predicted lit ellipsoid.
+
+    Three images (first, middle, last) show the observed body mask and the silhouette
+    predicted from the label geometry; a bar chart ranks the candidate array flips by
+    mean silhouette IoU.
+
+    Parameters
+    ----------
+    ws : Workspace
+        Workspace with prepared PNGs.
+    ds : Dataset
+        Dataset definition (camera and body).
+    meta : pandas.DataFrame
+        Image metadata with ``fit_path``.
+    prep : dict
+        Contents of ``prepare.json`` (``flip``, ``rel_threshold``, ``orientation_scores``).
+
+    Returns
+    -------
+    pathlib.Path
+        ``plots/03_orientation_check.png``.
+    """
     from .preprocess import FLIPS, apply_flip, body_mask, load_fits, predicted_lit_mask
 
     scores = pd.DataFrame(prep.get("orientation_scores") or [])
     cam = get_camera(ds.camera)
     picks = [0, len(meta) // 2, len(meta) - 1]
-    fig, axes = plt.subplots(1, 4, figsize=(14, 3.9), gridspec_kw={"width_ratios": [1, 1, 1, 0.9]})
+    fig, axes = plt.subplots(1, 4, figsize=(14, 4.2), gridspec_kw={"width_ratios": [1, 1, 1, 0.9]})
     for ax, i in zip(axes[:3], picks):
         r = meta.iloc[i]
         img = apply_flip(load_fits(r["fit_path"]), prep["flip"])
@@ -149,10 +429,10 @@ def plot_orientation(ws: Workspace, ds: Dataset, meta: pd.DataFrame, prep: dict)
         ax.set_xticks([])
         ax.set_yticks([])
         ax.grid(False)
-    axes[0].legend(handles=[Line2D([], [], color=CATEGORICAL[1], label="observed body mask"),
-                            Line2D([], [], color=CATEGORICAL[0], ls="--",
-                                   label="label geometry + ellipsoid")],
-                   loc="lower left", fontsize=8, facecolor=SURFACE, framealpha=0.9, frameon=True)
+    fig.legend(handles=[Line2D([], [], color=CATEGORICAL[1], label="observed body mask"),
+                        Line2D([], [], color=CATEGORICAL[0], ls="--",
+                               label="label geometry + ellipsoid")],
+               loc="lower left", bbox_to_anchor=(0.01, 0.0), ncol=2)
     ax = axes[3]
     if len(scores):
         mean = scores.groupby("flip")["iou"].mean().reindex(FLIPS)
@@ -169,14 +449,35 @@ def plot_orientation(ws: Workspace, ds: Dataset, meta: pd.DataFrame, prep: dict)
         ax.axis("off")
     _suptitle(fig, "Orientation check", f"Selected flip: {prep['flip']!r} - the FITS rows are "
               "stored bottom-up relative to the camera frame")
-    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    fig.tight_layout(rect=(0, 0.07, 1, 0.94))
     return _save(fig, ws.plots / "03_orientation_check.png")
 
 
 # ---------------------------------------------------------------- reconstruction
 
+@_styled
 def plot_features(ws: Workspace, cams: pd.DataFrame, obs: pd.DataFrame, lm: pd.DataFrame,
                   colors) -> Path:
+    """Figure 04: landmark observations on the best-connected image of each sequence.
+
+    Parameters
+    ----------
+    ws : Workspace
+        Workspace with prepared PNGs.
+    cams : pandas.DataFrame
+        Catalog ``cameras.csv``.
+    obs : pandas.DataFrame
+        Catalog ``observations.csv`` (``u``, ``v`` in COLMAP pixel-edge convention).
+    lm : pandas.DataFrame
+        Catalog ``landmarks.csv``; the dots are coloured by track length.
+    colors : dict
+        ``{sequence: colour}``; kept for a uniform call signature.
+
+    Returns
+    -------
+    pathlib.Path
+        ``plots/04_features.png``.
+    """
     track = lm.set_index("landmark_id").track_length
     picks = (cams[cams.registered].sort_values("num_landmarks", ascending=False)
              .drop_duplicates("sequence").sort_values("utc"))
@@ -192,20 +493,31 @@ def plot_features(ws: Workspace, cams: pd.DataFrame, obs: pd.DataFrame, lm: pd.D
         ax.set_yticks([])
         ax.grid(False)
     fig.subplots_adjust(left=0.01, right=0.9, bottom=0.01, top=0.86, wspace=0.03)
-    cax = fig.add_axes((0.915, 0.12, 0.014, 0.64))
-    cb = fig.colorbar(sc, cax=cax)
-    ticks = [t for t in (3, 5, 10, 20, 30, 50, 100) if t <= vmax]
-    cb.ax.yaxis.set_major_locator(FixedLocator(ticks))
-    cb.ax.yaxis.set_major_formatter(ScalarFormatter())
-    cb.ax.yaxis.set_minor_locator(NullLocator())
-    cb.set_label("track length (images)")
-    cb.outline.set_edgecolor(AXIS)
+    cb = _colorbar(fig, sc, "track length (images)", cax=fig.add_axes((0.915, 0.12, 0.014, 0.64)))
+    _log_ticks(cb, 3, vmax)
     _suptitle(fig, "Triangulated keypoints", "Landmark observations on the best-connected image "
               "of each sequence")
     return _save(fig, ws.plots / "04_features.png")
 
 
+@_styled
 def plot_covisibility(ws: Workspace, cams: pd.DataFrame, obs: pd.DataFrame) -> Path:
+    """Figure 05: number of landmarks shared by every pair of images.
+
+    Parameters
+    ----------
+    ws : Workspace
+        Output workspace.
+    cams : pandas.DataFrame
+        Registered rows of ``cameras.csv``; sets the time order and sequence blocks.
+    obs : pandas.DataFrame
+        Catalog ``observations.csv``.
+
+    Returns
+    -------
+    pathlib.Path
+        ``plots/05_covisibility.png``.
+    """
     order = cams.sort_values("utc").image.tolist()
     pos = {n: i for i, n in enumerate(order)}
     o = obs[["landmark_id", "image"]].assign(i=obs.image.map(pos))
@@ -226,12 +538,8 @@ def plot_covisibility(ws: Workspace, cams: pd.DataFrame, obs: pd.DataFrame) -> P
     ax.set_xticks(centres, labels)
     ax.set_yticks(centres, labels)
     ax.grid(False)
-    cb = fig.colorbar(im, ax=ax, shrink=0.8, pad=0.02)
-    cb.ax.yaxis.set_major_locator(FixedLocator([t for t in (1, 10, 100, 1000, 10000) if t <= np.nanmax(A)]))
-    cb.ax.yaxis.set_major_formatter(StrMethodFormatter("{x:,.0f}"))
-    cb.ax.yaxis.set_minor_locator(NullLocator())
-    cb.set_label("shared landmarks")
-    cb.outline.set_edgecolor(AXIS)
+    cb = _colorbar(fig, im, "shared landmarks", ax=ax, shrink=0.8, pad=0.02)
+    _log_ticks(cb, 1, np.nanmax(A))
     ax.set_xlabel("image (time order)")
     fig.subplots_adjust(left=0.1, right=0.98, bottom=0.08, top=0.9)
     _suptitle(fig, "Co-visibility", "Landmarks shared by each image pair; off-diagonal blocks "
@@ -239,170 +547,510 @@ def plot_covisibility(ws: Workspace, cams: pd.DataFrame, obs: pd.DataFrame) -> P
     return _save(fig, ws.plots / "05_covisibility.png")
 
 
+@_styled
 def plot_alignment(ws: Workspace, cams: pd.DataFrame, colors, summary: dict) -> Path:
+    """Figure 06: per-image residuals between the COLMAP and label camera poses.
+
+    Three panels against hours since sequence start: camera-position residual after the
+    similarity fit, boresight offset, and twist about the boresight.
+
+    Parameters
+    ----------
+    ws : Workspace
+        Output workspace.
+    cams : pandas.DataFrame
+        Catalog ``cameras.csv``.
+    colors : dict
+        ``{sequence: colour}`` from :func:`_seq_colors`.
+    summary : dict
+        Catalog ``summary.json``; its ``alignment`` block feeds the subtitle.
+
+    Returns
+    -------
+    pathlib.Path
+        ``plots/06_alignment.png``.
+    """
     c = cams[cams.registered].copy()
-    c["time"] = pd.to_datetime(c.utc)
+    c["hours"] = _hours_since_start(c, "utc")
     c["boresight_px"] = np.hypot(c.boresight_du_px, c.boresight_dv_px)
-    panels = [("position_residual_km", "Camera position residual after similarity fit (km)"),
-              ("boresight_px", "COLMAP vs label boresight offset (px)"),
-              ("twist_deg", "COLMAP vs label twist about the boresight (°)")]
-    fig, axes = plt.subplots(3, 1, figsize=(10, 7.6), sharex=True)
-    for ax, (col, label) in zip(axes, panels):
-        for seq, grp in c.groupby("sequence", sort=False):
-            ax.plot(grp.time, grp[col], "o-", color=colors[seq], markersize=3.5, lw=1.2)
-        ax.set_title(label, fontsize=10)
+    c["twist_arcsec"] = c.twist_deg * 3600.0
+    panels = [("position_residual_km", "Camera position residual after the similarity fit",
+               "km", f"median {c.position_residual_km.median():.2f} km"),
+              ("boresight_px", "Boresight offset, COLMAP vs label", "px",
+               f"median {c.boresight_px.median():.1f} px"),
+              ("twist_arcsec", "Twist about the boresight, COLMAP vs label", "arcsec",
+               f"median |twist| {c.twist_arcsec.abs().median():.0f} arcsec")]
+    fig, axes = plt.subplots(3, 1, figsize=(10, 7.8), sharex=True, layout="constrained")
+    fig.get_layout_engine().set(rect=(0, 0, 1, 0.94))
+    for ax, (col, title, unit, stat) in zip(axes, panels):
+        for seq, grp in c.sort_values("utc").groupby("sequence", sort=False):
+            ax.plot(grp.hours, grp[col], "o-", color=colors[seq], markersize=3.5, lw=1.0)
+        ax.set_title(f"{title} ({stat})", fontsize=10)
+        ax.set_ylabel(unit)
     axes[2].axhline(0, color=AXIS, lw=1)
-    _time_axis(axes[2])
-    axes[2].set_xlabel("UTC")
+    axes[2].set_xlabel("hours since sequence start")
     a = summary["alignment"]
     _suptitle(fig, "Georeferencing residuals",
               f"position RMS {a['position_rms_km']:.2f} km over {a['num_used_in_fit']} images; "
               f"median attitude difference {a['attitude_median_deg'] * 3600:.0f}\" "
               f"({a['boresight_median_px']:.1f} px)")
-    fig.legend(handles=_legend_handles(colors), loc="upper right", bbox_to_anchor=(0.99, 1.03),
-               ncol=len(colors))
-    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    fig.legend(handles=_legend_handles(colors, labels=_seq_labels(c, "utc")), loc="lower right",
+               bbox_to_anchor=(0.99, 1.0), ncol=len(colors))
     return _save(fig, ws.plots / "06_alignment.png")
 
 
 # ---------------------------------------------------------------- catalog
 
 def _height_norm(h: pd.Series) -> TwoSlopeNorm:
+    """Symmetric diverging norm centred on 0 km, clipped at the 98th percentile of ``|h|``."""
     lim = float(np.nanpercentile(np.abs(h), 98))
     return TwoSlopeNorm(0.0, -lim, lim)
 
 
-def plot_pointcloud(ws: Workspace, lm: pd.DataFrame, max_points: int = 60000) -> Path:
+def _view_basis(lat0: float, lon0: float):
+    """Orthographic camera basis for a view centred on ``(lat0, lon0)``.
+
+    Parameters
+    ----------
+    lat0, lon0 : float
+        Planetocentric latitude and east longitude of the view centre (degrees).
+
+    Returns
+    -------
+    tuple of numpy.ndarray
+        ``(d, right, up)``: unit vector towards the viewer, then the screen axes. The
+        basis is right-handed (``right × up = d``), so the view is not mirrored; ``up``
+        points to the north pole, or to 0°E when looking straight at a pole.
+    """
+    d = latlon_to_unit(lat0, lon0)
+    lo = np.radians(lon0)
+    right = np.array([-np.sin(lo), np.cos(lo), 0.0])
+    up = np.cross(d, right)
+    return d, right, up / np.linalg.norm(up)
+
+
+def _globe_view(ax, xyz: np.ndarray, values, cmap, norm, radii, lat0: float, lon0: float,
+                s: float = 0.8):
+    """Draw landmarks on an orthographic globe with graticule, limb and labels.
+
+    Points on the far side (outward ellipsoid normal facing away from the viewer) are
+    culled, and the rest are drawn far to near so nearer points cover farther ones.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Target 2-D axes; its frame is switched off.
+    xyz : numpy.ndarray
+        ``(N, 3)`` body-fixed landmark positions (km).
+    values : array_like
+        ``(N,)`` values mapped through ``cmap`` and ``norm``.
+    cmap, norm : matplotlib colormap and norm
+    radii : sequence of float
+        Reference ellipsoid semi-axes ``(a, b, c)`` in km.
+    lat0, lon0 : float
+        View centre (degrees).
+    s : float
+        Marker area (points²).
+
+    Returns
+    -------
+    matplotlib.collections.PathCollection
+        The scatter, for a colorbar.
+    """
+    a = np.asarray(radii, float)
+    d, right, up = _view_basis(lat0, lon0)
+    facing = (xyz / a ** 2) @ d > 0
+    p, v = xyz[facing], np.asarray(values)[facing]
+    order = np.argsort(p @ d)
+    sc = ax.scatter((p @ right)[order], (p @ up)[order], c=v[order], cmap=cmap, norm=norm, s=s,
+                    linewidths=0, rasterized=True, zorder=2)
+
+    def surface(lat, lon):
+        """Project ellipsoid surface points onto the view plane; far-side points become NaN."""
+        X = ellipsoid_radius(lat, lon, a)[..., None] * latlon_to_unit(lat, lon)
+        vis = (X / a ** 2) @ d > 0
+        x, y = X @ right, X @ up
+        x[~vis] = np.nan
+        y[~vis] = np.nan
+        return x, y, vis
+
+    halo = [pe.withStroke(linewidth=2.2, foreground=SURFACE)]
+    for lat in range(-60, 61, 30):
+        x, y, _ = surface(np.full(361, lat), np.arange(361.0))
+        ax.plot(x, y, color=INK, lw=0.7 if lat == 0 else 0.4, alpha=0.35, zorder=3)
+    for lon in range(0, 360, 30):
+        x, y, _ = surface(np.linspace(-90, 90, 181), np.full(181, lon))
+        ax.plot(x, y, color=INK, lw=0.7 if lon == 0 else 0.4, alpha=0.35, zorder=3)
+    for lon in range(0, 360, 90):
+        x, y, vis = surface(np.array([0.0]), np.array([float(lon)]))
+        X = ellipsoid_radius(0.0, lon, a) * latlon_to_unit(0.0, lon)
+        if vis[0] and (X / np.linalg.norm(X)) @ d > 0.25:
+            ax.text(x[0], y[0], f"{lon}°E", fontsize=7.5, color=INK2, ha="center", va="bottom",
+                    path_effects=halo, zorder=4)
+    for lat, name in ((-90.0, "S"), (90.0, "N")):
+        x, y, vis = surface(np.array([lat]), np.array([0.0]))
+        if vis[0] and abs(np.sin(np.radians(lat)) * d[2]) > 0.25:
+            ax.plot(x, y, "+", color=INK, markersize=6, mew=1.0, zorder=4)
+            ax.text(x[0], y[0], f" {name}", fontsize=8, color=INK, ha="left", va="center",
+                    path_effects=halo, zorder=4)
+
+    w = d / a
+    w /= np.linalg.norm(w)
+    ref = np.array([0.0, 0.0, 1.0]) if abs(w[2]) < 0.9 else np.array([1.0, 0.0, 0.0])
+    p1 = np.cross(w, ref)
+    p1 /= np.linalg.norm(p1)
+    q1 = np.cross(w, p1)
+    t = np.linspace(0, 2 * np.pi, 721)[:, None]
+    limb = a * (np.cos(t) * p1 + np.sin(t) * q1)
+    lx, ly = limb @ right, limb @ up
+    ax.plot(lx, ly, color=AXIS, lw=0.8, zorder=3)
+    xl, yl = 1.06 * np.abs(lx).max(), 1.06 * np.abs(ly).max()
+    ax.set_xlim(-xl, xl)
+    ax.set_ylim(-yl, yl)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    return sc
+
+
+def _lat_label(lat: float) -> str:
+    """Format a latitude as ``30°S`` / ``0°`` / ``15°N``."""
+    return "0°" if lat == 0 else f"{abs(lat):g}°{'N' if lat > 0 else 'S'}"
+
+
+@_styled
+def plot_pointcloud(ws: Workspace, lm: pd.DataFrame, radii=(286.3, 278.6, 223.2),
+                    max_points: int = 60000, lat0: float = -30.0) -> Path:
+    """Figure 07: four orthographic globe views of the landmarks, coloured by height.
+
+    Parameters
+    ----------
+    ws : Workspace
+        Output workspace.
+    lm : pandas.DataFrame
+        Landmarks (``landmarks.csv`` or the curated subset) with ``x_km``, ``y_km``,
+        ``z_km``, ``height_km`` and ``outlier``.
+    radii : sequence of float
+        Reference ellipsoid semi-axes in km (used for culling, graticule and limb).
+    max_points : int
+        Random subsample size, for speed.
+    lat0 : float
+        Latitude of the four view centres (degrees); the centres are 0, 90, 180 and 270°E.
+
+    Returns
+    -------
+    pathlib.Path
+        ``plots/07_pointcloud.png``.
+    """
     g = lm[~lm.outlier]
     if len(g) > max_points:
         g = g.sample(max_points, random_state=0)
     norm = _height_norm(g.height_km)
-    views = [(15, 300, "seen from 300°E, 15°N"), (15, 120, "seen from 120°E, 15°N"),
-             (-60, 0, "seen from below (south)")]
-    fig = plt.figure(figsize=(15, 4.9))
-    lim = np.abs(g[["x_km", "y_km", "z_km"]].to_numpy()).max()
-    for k, (elev, azim, label) in enumerate(views):
-        ax = fig.add_subplot(1, 3, k + 1, projection="3d", computed_zorder=False)
-        sc = ax.scatter(g.x_km, g.y_km, g.z_km, c=g.height_km, cmap=DIVERGING, norm=norm, s=0.6,
-                        linewidths=0, depthshade=False)
-        ax.view_init(elev=elev, azim=azim)
-        ax.set_box_aspect((1, 1, 1), zoom=1.45)
-        for setter in (ax.set_xlim, ax.set_ylim, ax.set_zlim):
-            setter(-lim, lim)
-        ax.set_axis_off()
-        ax.set_title(label, fontsize=10, loc="center", y=1.0)
-    fig.subplots_adjust(left=0.0, right=0.9, bottom=0.0, top=0.88, wspace=0.0)
-    cax = fig.add_axes((0.91, 0.12, 0.012, 0.66))
-    cb = fig.colorbar(sc, cax=cax)
-    cb.set_label("height above reference ellipsoid (km)")
-    cb.outline.set_edgecolor(AXIS)
-    _suptitle(fig, "Landmark point cloud (body-fixed, Claudia double-prime)",
-              f"{len(g):,} landmarks coloured by height relative to the "
-              "286.3 × 278.6 × 223.2 km ellipsoid")
+    xyz = g[["x_km", "y_km", "z_km"]].to_numpy()
+    H = 3.8
+    top = 1 - 0.78 / H
+    fig, axes = plt.subplots(1, 4, figsize=(15.5, H))
+    fig.subplots_adjust(left=0.005, right=0.915, bottom=0.02, top=top, wspace=0.02)
+    for ax, lon0 in zip(axes, (0, 90, 180, 270)):
+        sc = _globe_view(ax, xyz, g.height_km.to_numpy(), DIVERGING, norm, radii, lat0, lon0)
+        ax.set_anchor("S")
+        # one shared baseline for the titles, whatever each globe's aspect ratio
+        box = ax.get_position(original=True)
+        fig.text((box.x0 + box.x1) / 2, top + 0.01, f"centred on {_lat_label(lat0)}, {lon0}°E",
+                 ha="center", va="bottom", fontsize=10, fontweight="bold", color=INK)
+    _colorbar(fig, sc, "height above ellipsoid (km)", cax=fig.add_axes((0.93, 0.08, 0.01, 0.6)),
+              extend="both")
+    a, b, c = radii
+    _suptitle(fig, "Landmark globe (body-fixed, Claudia double-prime)",
+              f"{len(g):,} landmarks coloured by height above the {a:g} × {b:g} × {c:g} km "
+              "ellipsoid; orthographic views, graticule every 30° (equator and prime meridian "
+              "thicker). The blank north was in polar night.")
     return _save(fig, ws.plots / "07_pointcloud.png")
 
 
-def plot_map(ws: Workspace, lm: pd.DataFrame, curated: pd.DataFrame) -> Path:
+def _polar_xy(lat, lon):
+    """South-polar azimuthal-equidistant coordinates: radius 90° + latitude, 0°E up.
+
+    East longitude runs clockwise, as seen from below the south pole.
+    """
+    r = 90.0 + np.asarray(lat, float)
+    lo = np.radians(lon)
+    return r * np.sin(lo), r * np.cos(lo)
+
+
+def _polar_frame(ax):
+    """Draw latitude rings, longitude spokes and labels on a south-polar panel."""
+    t = np.radians(np.arange(361))
+    az = np.radians(15.0)
+    for lat in (-80, -60, -40, -20, 0):
+        r = 90 + lat
+        ax.plot(r * np.sin(t), r * np.cos(t), color=INK, lw=0.8 if lat == 0 else 0.4, alpha=0.35,
+                zorder=3)
+        if lat:  # the outer ring is the equator; the spoke labels sit just outside it
+            ax.text(r * np.sin(az), r * np.cos(az), f"{abs(lat)}°S", fontsize=7.5, color=INK2,
+                    ha="center", va="center", zorder=4,
+                    path_effects=[pe.withStroke(linewidth=2.2, foreground=SURFACE)])
+    for lon in range(0, 360, 30):
+        lo = np.radians(lon)
+        ax.plot([0, 90 * np.sin(lo)], [0, 90 * np.cos(lo)], color=INK,
+                lw=0.7 if lon == 0 else 0.4, alpha=0.35, zorder=3)
+        ax.text(97 * np.sin(lo), 97 * np.cos(lo), f"{lon}°E", fontsize=7.5, color=INK2,
+                ha="center", va="center")
+    ax.set_xlim(-104, 104)
+    ax.set_ylim(-104, 104)
+    ax.set_aspect("equal")
+    ax.axis("off")
+
+
+def _map_axes(ax, title: str, night: tuple[float, float] | None):
+    """Format an equirectangular longitude/latitude panel and shade polar night."""
+    if night:
+        ax.axhspan(*night, color=GRID, lw=0, zorder=0)
+        ax.text(4, np.mean(night), "polar night", va="center", fontsize=8.5, color=INK2)
+    ax.set_xlim(0, 360)
+    ax.set_ylim(-90, 90)
+    ax.set_xticks(range(0, 361, 30))
+    ax.set_yticks(range(-90, 91, 30))
+    ax.set_aspect("equal")
+    ax.set_xlabel("east longitude (°)")
+    ax.set_ylabel("latitude (°)")
+    ax.set_title(title, fontsize=10)
+
+
+@_styled
+def plot_map(ws: Workspace, lm: pd.DataFrame, curated: pd.DataFrame,
+             spacing_km: float | None = None, night_lat_deg: tuple[float, float] | None = None
+             ) -> Path:
+    """Figure 08: landmark maps.
+
+    Top left: every landmark on an equirectangular map, coloured by height. Bottom left:
+    the curated subset coloured by track length. Right: the southern hemisphere in a
+    south-polar azimuthal-equidistant view, coloured by height (the Rheasilvia basin).
+
+    Parameters
+    ----------
+    ws : Workspace
+        Output workspace; ``catalog/summary.json`` supplies the curated cell size when
+        ``spacing_km`` is not given.
+    lm : pandas.DataFrame
+        All landmarks (needs ``lat_deg``, ``lon_deg``, ``height_km``, ``outlier``).
+    curated : pandas.DataFrame
+        Curated landmarks (needs ``track_length``).
+    spacing_km : float, optional
+        Curated cell size, shown in the panel title.
+    night_lat_deg : tuple of float, optional
+        Latitude band to shade as polar night (see :func:`_polar_night`).
+
+    Returns
+    -------
+    pathlib.Path
+        ``plots/08_landmark_map.png``.
+    """
+    spacing_km = spacing_km if spacing_km is not None else _curated_spacing(ws)
     g = lm[~lm.outlier]
-    fig, grid = plt.subplots(2, 2, figsize=(11.5, 10.2), width_ratios=(1, 0.025))
-    axes = grid[:, 0]
-    grid[1, 1].axis("off")
-    ax = axes[0]
-    order = np.argsort(np.abs(g.height_km.to_numpy()))
-    sc = ax.scatter(g.lon_deg.to_numpy()[order], g.lat_deg.to_numpy()[order],
-                    c=g.height_km.to_numpy()[order], cmap=DIVERGING, norm=_height_norm(g.height_km),
-                    s=1.2, linewidths=0, rasterized=True)
-    cb = fig.colorbar(sc, cax=grid[0, 1])
-    cb.set_label("height above ellipsoid (km)")
-    cb.outline.set_edgecolor(AXIS)
-    ax.set_title(f"All landmarks ({len(g):,}), coloured by height", fontsize=10)
-    ax = axes[1]
-    grade_colors = {"A": "#0d366b", "B": "#3987e5", "C": "#9ec5f4"}
     c = curated[~curated.outlier] if "outlier" in curated else curated
-    for grade in ("C", "B", "A"):  # best grade drawn last, on top
-        sel = c[c.grade == grade]
-        if sel.empty:
-            continue
-        ax.scatter(sel.lon_deg, sel.lat_deg, s=7, color=grade_colors[grade], linewidths=0.3,
-                   edgecolors=SURFACE, label=f"{grade}  ({len(sel):,})", rasterized=True)
-    handles, labels = ax.get_legend_handles_labels()
-    grid[1, 1].legend(handles[::-1], labels[::-1], title="grade", loc="upper left",
-                      bbox_to_anchor=(0.0, 1.0), markerscale=2.2, borderaxespad=0, alignment="left")
-    ax.set_title(f"Curated subset ({len(c):,}): best grade A/B landmark per "
-                 f"{_curated_spacing(ws):g} km equal-area cell", fontsize=10)
-    for ax in axes:
-        ax.set_xlim(0, 360)
-        ax.set_ylim(-90, 90)
-        ax.set_xticks(range(0, 361, 30))
-        ax.set_yticks(range(-90, 91, 30))
-        ax.set_aspect("equal")
-        ax.set_xlabel("east longitude (°)")
-        ax.set_ylabel("planetocentric latitude (°)")
-    _suptitle(fig, "Landmark map", "Equirectangular, Claudia double-prime frame; the north is "
-              "unlit during approach (polar night)")
-    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    norm = _height_norm(g.height_km)
+    fig = plt.figure(figsize=(15.5, 9.0), layout="constrained")
+    fig.get_layout_engine().set(rect=(0, 0, 1, 0.94), wspace=0.04)
+    gs = fig.add_gridspec(2, 2, width_ratios=(1.15, 1))
+    ax_h, ax_t, ax_p = fig.add_subplot(gs[0, 0]), fig.add_subplot(gs[1, 0]), fig.add_subplot(gs[:, 1])
+
+    order = np.argsort(np.abs(g.height_km.to_numpy()))  # extreme heights drawn on top
+    gh = g.iloc[order]
+    sc = ax_h.scatter(gh.lon_deg, gh.lat_deg, c=gh.height_km, cmap=DIVERGING, norm=norm, s=1.0,
+                      linewidths=0, rasterized=True)
+    _map_axes(ax_h, f"All landmarks ({len(g):,}), coloured by height", night_lat_deg)
+    _colorbar(fig, sc, "height above ellipsoid (km)", ax=ax_h, pad=0.01, fraction=0.03,
+              extend="both")
+
+    tmax = float(max(c.track_length.max(), 4))
+    ct = c.sort_values("track_length")
+    sc = ax_t.scatter(ct.lon_deg, ct.lat_deg, c=ct.track_length, cmap=SEQUENTIAL_MARKS,
+                      norm=LogNorm(max(float(c.track_length.min()), 1.0), tmax), s=5, linewidths=0,
+                      rasterized=True)
+    _map_axes(ax_t, f"Curated subset ({len(c):,}): best grade A/B landmark per "
+              f"{spacing_km:g} km equal-area cell", night_lat_deg)
+    cb = _colorbar(fig, sc, "track length (images)", ax=ax_t, pad=0.01, fraction=0.03)
+    _log_ticks(cb, float(c.track_length.min()), tmax)
+
+    s = gh[gh.lat_deg <= 0]
+    x, y = _polar_xy(s.lat_deg, s.lon_deg)
+    sc = ax_p.scatter(x, y, c=s.height_km, cmap=DIVERGING, norm=norm, s=1.2, linewidths=0,
+                      rasterized=True, zorder=2)
+    _polar_frame(ax_p)
+    ax_p.set_title(f"Southern hemisphere from below ({len(s):,} landmarks)", fontsize=10)
+    _colorbar(fig, sc, "height above ellipsoid (km)", ax=ax_p, orientation="horizontal",
+              shrink=0.7, pad=0.01, aspect=35, extend="both")
+    _suptitle(fig, "Landmark maps", "Claudia double-prime frame, planetocentric latitude. Left: "
+              "equirectangular; right: south-polar azimuthal equidistant (rings every 20°, outer "
+              "ring = equator, longitude clockwise). The Rheasilvia basin fills the south-polar "
+              "view.")
     return _save(fig, ws.plots / "08_landmark_map.png")
 
 
 def _curated_spacing(ws: Workspace) -> float:
+    """Curated cell size (km) from ``catalog/summary.json``, or 10 km when unavailable."""
     try:
         return float(ws.read_json(ws.catalog / "summary.json").get("curated_spacing_km") or 10.0)
     except (FileNotFoundError, ValueError):
         return 10.0
 
 
+@_styled
 def plot_quality(ws: Workspace, lm: pd.DataFrame) -> Path:
-    from .catalog import GRADES
+    """Figure 09: distributions of the landmark quality metrics, stacked by grade.
 
+    Panels: track length (log count axis), mean reprojection error, maximum
+    triangulation angle and height. Dashed lines mark the grade thresholds of
+    :data:`asteroid_colmap.catalog.GRADES`. Each x axis is clipped at a high percentile
+    so a few extreme values do not squash the histogram.
+
+    Parameters
+    ----------
+    ws : Workspace
+        Output workspace.
+    lm : pandas.DataFrame
+        Landmarks with ``track_length``, ``reproj_error_px``, ``max_tri_angle_deg``,
+        ``height_km``, ``grade`` and ``outlier``.
+
+    Returns
+    -------
+    pathlib.Path
+        ``plots/09_quality.png``.
+    """
     g = lm[~lm.outlier]
-    fig, axes = plt.subplots(2, 2, figsize=(11, 6.6))
+    grades = [k for k in ("A", "B", "C") if (g.grade == k).any()]
+    t_hi = max(float(np.percentile(g.track_length, 99.5)), GRADES["A"][0] + 2)
+    e_hi = max(float(np.percentile(g.reproj_error_px, 99.8)), GRADES["B"][2] * 1.1)
+    a_hi = float(np.percentile(g.max_tri_angle_deg, 99.8))
+    h_lo, h_hi = np.percentile(g.height_km, [0.5, 99.5])
+    nA, nB = GRADES["A"], GRADES["B"]
     specs = [
-        ("track_length", "Track length (images)", np.arange(2.5, min(g.track_length.max(), 80) + 1.5, 1),
-         [GRADES["B"][0], GRADES["A"][0]]),
-        ("reproj_error_px", "Mean reprojection error (px)", np.linspace(0, g.reproj_error_px.max(), 50),
-         [GRADES["A"][2], GRADES["B"][2]]),
-        ("max_tri_angle_deg", "Max triangulation angle (°)",
-         np.linspace(0, g.max_tri_angle_deg.max(), 50), [GRADES["B"][1], GRADES["A"][1]]),
-        ("height_km", "Height above ellipsoid (km)", np.linspace(*np.nanpercentile(g.height_km, [0.5, 99.5]), 60), []),
+        ("track_length", "Track length (images)", np.arange(2.5, np.floor(t_hi) + 1.5, 1.0),
+         [(nB[0] - 0.5, f"B ≥ {nB[0]}"), (nA[0] - 0.5, f"A ≥ {nA[0]}")], True),
+        ("reproj_error_px", "Mean reprojection error (px)", np.linspace(0, e_hi, 51),
+         [(nA[2], f"A ≤ {nA[2]:g}"), (nB[2], f"B ≤ {nB[2]:g}")], False),
+        ("max_tri_angle_deg", "Max triangulation angle (°)", np.arange(0, a_hi + 2, 2.0),
+         [(nB[1], f"B ≥ {nB[1]:g}°"), (nA[1], f"A ≥ {nA[1]:g}°")], False),
+        ("height_km", "Height above ellipsoid (km)", np.linspace(h_lo, h_hi, 61),
+         [(0.0, "ellipsoid")], False),
     ]
-    for ax, (col, title, bins, thresholds) in zip(axes.flat, specs):
-        ax.hist(g[col], bins=bins, color=CATEGORICAL[0], edgecolor=SURFACE, linewidth=0.5)
-        for t in thresholds:
-            ax.axvline(t, color=INK2, lw=1, ls="--")
+    fig, axes = plt.subplots(2, 2, figsize=(11.5, 7.0))
+    for ax, (col, title, bins, lines, logy) in zip(axes.flat, specs):
+        data = [g.loc[(g.grade == k) & g[col].between(bins[0], bins[-1]), col] for k in grades]
+        ax.hist(data, bins=bins, stacked=True, color=[GRADE_COLORS[k] for k in grades],
+                edgecolor=SURFACE, linewidth=0.4)
+        for i, (x, label) in enumerate(lines):
+            ax.axvline(x, color=INK2, lw=0.9, ls="--")
+            ax.text(x, 0.99 - 0.08 * i, f" {label}", transform=ax.get_xaxis_transform(),
+                    ha="left", va="top", fontsize=8, color=INK2)
+        if logy:
+            ax.set_yscale("log")
+        ax.yaxis.set_major_formatter(StrMethodFormatter("{x:,g}"))
+        ax.set_xlim(bins[0], bins[-1])
         ax.set_title(title, fontsize=10)
         ax.set_ylabel("landmarks")
-    counts = lm.grade.value_counts().reindex(["A", "B", "C"], fill_value=0)
+    counts = lm.grade.value_counts()
+    fig.legend(handles=[Patch(color=GRADE_COLORS[k], label=f"grade {k}  ({counts.get(k, 0):,})")
+                        for k in grades], loc="lower right", bbox_to_anchor=(0.99, 1.0),
+               ncol=len(grades))
     _suptitle(fig, "Landmark quality",
-              f"grades A/B/C: {counts['A']:,} / {counts['B']:,} / {counts['C']:,}; dashed lines = grade "
-              "thresholds (A: track ≥ 8, angle ≥ 15°, error ≤ 1 px; B: ≥ 4, ≥ 5°, ≤ 2 px)")
+              f"{len(g):,} landmarks stacked by grade; a grade needs all three thresholds "
+              f"(A: track ≥ {nA[0]}, angle ≥ {nA[1]:g}°, error ≤ {nA[2]:g} px; B: ≥ {nB[0]}, "
+              f"≥ {nB[1]:g}°, ≤ {nB[2]:g} px). x axes end at the 99.5–99.8th percentile.")
     fig.tight_layout(rect=(0, 0, 1, 0.95))
     return _save(fig, ws.plots / "09_quality.png")
 
 
+@_styled
 def plot_radius(ws: Workspace, lm: pd.DataFrame) -> Path:
+    """Figure 10: landmark height above the ellipsoid against latitude.
+
+    A logarithmic hexbin density, with the median and the 25th/75th percentiles in 5°
+    latitude bands (bands with at least 20 landmarks). The plotted range excludes the
+    0.25 % most extreme heights and 0.05 % most extreme latitudes on each side.
+
+    Parameters
+    ----------
+    ws : Workspace
+        Output workspace.
+    lm : pandas.DataFrame
+        Landmarks with ``lat_deg``, ``height_km`` and ``outlier``.
+
+    Returns
+    -------
+    pathlib.Path
+        ``plots/10_radius_vs_latitude.png``.
+    """
     g = lm[~lm.outlier]
-    fig, ax = plt.subplots(figsize=(10, 4.8))
-    hb = ax.hexbin(g.lat_deg, g.height_km, gridsize=(90, 40), cmap=SEQUENTIAL, mincnt=1, bins="log",
+    lat_lo, lat_hi = np.percentile(g.lat_deg, [0.05, 99.95])
+    lat_lo, lat_hi = 5 * np.floor(lat_lo / 5), 5 * np.ceil(lat_hi / 5)
+    h_lo, h_hi = np.percentile(g.height_km, [0.25, 99.75])
+    pad = 0.05 * (h_hi - h_lo)
+    h_lo, h_hi = h_lo - pad, h_hi + pad
+    shown = g[g.lat_deg.between(lat_lo, lat_hi) & g.height_km.between(h_lo, h_hi)]
+    fig, ax = plt.subplots(figsize=(10.5, 5.0))
+    hb = ax.hexbin(shown.lat_deg, shown.height_km, gridsize=(80, 32),
+                   extent=(lat_lo, lat_hi, h_lo, h_hi), cmap=SEQUENTIAL, norm=LogNorm(), mincnt=1,
                    linewidths=0)
-    bins = np.arange(-90, 91, 5)
+    ax.axhline(0, color=AXIS, lw=1.0, zorder=1)
+    bins = np.arange(lat_lo, lat_hi + 5, 5)
+    band = g[g.lat_deg.between(lat_lo, lat_hi)]
+    grp = band.groupby(pd.cut(band.lat_deg, bins), observed=False).height_km
+    q = grp.quantile([0.25, 0.5, 0.75]).unstack()
+    q[grp.size().to_numpy() < 20] = np.nan
     mid = (bins[:-1] + bins[1:]) / 2
-    med = g.groupby(pd.cut(g.lat_deg, bins), observed=False).height_km.median().to_numpy()
-    ax.plot(mid, med, color=INK, lw=1.5, label="median per 5° band")
-    ax.axhline(0, color=INK2, lw=0.8, ls="--")
-    ax.legend(loc="upper right")
-    cb = fig.colorbar(hb, ax=ax, pad=0.01)
-    cb.set_label("landmarks per cell")
-    cb.outline.set_edgecolor(AXIS)
+    halo = [pe.withStroke(linewidth=3.2, foreground=SURFACE)]
+    ax.plot(mid, q[0.5].to_numpy(), color=INK, lw=1.6, label="median per 5° band",
+            path_effects=halo)
+    ax.plot(mid, q[0.25].to_numpy(), color=INK, lw=0.9, ls="--", label="25th / 75th percentile",
+            path_effects=halo)
+    ax.plot(mid, q[0.75].to_numpy(), color=INK, lw=0.9, ls="--", path_effects=halo)
+    ax.set_xlim(lat_lo, lat_hi)
+    ax.set_ylim(h_lo, h_hi)
+    ax.legend(loc="upper left")
+    counts = hb.get_array()
+    cb = _colorbar(fig, hb, "landmarks per cell", ax=ax, pad=0.01)
+    _log_ticks(cb, float(counts.min()), float(counts.max()))
     ax.set_xlabel("planetocentric latitude (°)")
     ax.set_ylabel("height above ellipsoid (km)")
-    _suptitle(fig, "Radius residuals vs latitude", "Height of each landmark above the reference "
-              "ellipsoid; the low southern latitudes lie in the Rheasilvia basin")
-    fig.tight_layout(rect=(0, 0, 1, 0.94))
+    _suptitle(fig, "Radius residuals vs latitude",
+              f"Height of {len(shown) / len(g):.1%} of {len(g):,} landmarks above the reference "
+              "ellipsoid (0 km line); the low southern latitudes lie in the Rheasilvia basin")
+    fig.tight_layout(rect=(0, 0, 1, 0.93))
     return _save(fig, ws.plots / "10_radius_vs_latitude.png")
 
 
+@_styled
 def plot_chips(ws: Workspace, curated: pd.DataFrame, obs: pd.DataFrame, cams: pd.DataFrame,
                n_landmarks: int = 8, n_views: int = 7, half: int = 24) -> Path:
+    """Figure 11: image chips of a few grade-A landmarks across their views.
+
+    Landmarks are picked from the curated set (grade A when possible), spread in
+    longitude and preferring long tracks; each row shows ``n_views`` chips from the
+    earliest to the latest observation, with the measured keypoint at the centre.
+
+    Parameters
+    ----------
+    ws : Workspace
+        Workspace with prepared PNGs.
+    curated : pandas.DataFrame
+        Catalog ``landmarks_curated.csv``.
+    obs : pandas.DataFrame
+        Catalog ``observations.csv``.
+    cams : pandas.DataFrame
+        Catalog ``cameras.csv`` (image times).
+    n_landmarks : int
+        Number of rows.
+    n_views : int
+        Chips per row.
+    half : int
+        Chip half-width in pixels (chips are ``2 * half + 1`` square).
+
+    Returns
+    -------
+    pathlib.Path
+        ``plots/11_landmark_chips.png``.
+    """
     cand = curated[curated.grade == "A"]
     if len(cand) < n_landmarks:
         cand = curated
@@ -426,7 +1074,10 @@ def plot_chips(ws: Workspace, curated: pd.DataFrame, obs: pd.DataFrame, cams: pd
         extra = cand[~cand.landmark_id.isin(picks.landmark_id)].nlargest(n_landmarks - len(picks),
                                                                           "track_length")
         picks = pd.concat([picks, extra]).sort_values("lon_deg")
-    fig, axes = plt.subplots(len(picks), n_views, figsize=(n_views * 1.35, len(picks) * 1.5))
+    W, H = n_views * 1.35 + 1.5, len(picks) * 1.5 + 0.6
+    fig, axes = plt.subplots(len(picks), n_views, figsize=(W, H))
+    fig.subplots_adjust(left=1.5 / W, right=0.995, bottom=0.01, top=1 - 0.6 / H, wspace=0.05,
+                        hspace=0.32)
     axes = np.atleast_2d(axes)
     cache: dict[str, np.ndarray] = {}
     for row, (_, lmk) in zip(axes, picks.iterrows()):
@@ -441,27 +1092,43 @@ def plot_chips(ws: Workspace, curated: pd.DataFrame, obs: pd.DataFrame, cams: pd
             ax.imshow(chip, cmap="gray", vmin=np.percentile(chip, 1), vmax=np.percentile(chip, 99.5))
             ax.plot(half, half, "+", color=CATEGORICAL[1], markersize=9, mew=1.2)
             ax.set_title(pd.Timestamp(ob.t).strftime("%d %H:%M"), fontsize=7, color=INK2, loc="center")
-        row[0].text(-0.12, 0.5, f"{lmk.landmark_id}\n{lmk.lat_deg:+.1f}°, {lmk.lon_deg:.1f}°E\n"
-                    f"{lmk.track_length} views", transform=row[0].transAxes, ha="right", va="center",
-                    fontsize=7.5, color=INK)
+        row[0].text(-0.08, 0.5, f"{lmk.landmark_id}\n{lmk.lat_deg:+.1f}°, {lmk.lon_deg:.1f}°E\n"
+                    f"{lmk.track_length} views, grade {lmk.grade}", transform=row[0].transAxes,
+                    ha="right", va="center", fontsize=7.5, color=INK)
     _suptitle(fig, "Landmark chips", f"{2 * half + 1}×{2 * half + 1} px around each observation, "
-              "earliest to latest view (+ = measured keypoint); one row per grade A landmark")
-    fig.tight_layout(rect=(0.08, 0, 1, 0.95))
+              "earliest to latest view (+ = measured keypoint, title = day and UTC time)")
     return _save(fig, ws.plots / "11_landmark_chips.png")
 
 
-def plot_interactive(ws: Workspace, lm: pd.DataFrame, cams: pd.DataFrame, max_points: int = 80000):
-    try:
-        import plotly.graph_objects as go
-    except ImportError:
-        log.info("plotly not installed - skipping the interactive page (pip install plotly)")
-        return None
+def interactive_figure(lm: pd.DataFrame, max_points: int = 80000, title: str | None = None):
+    """Build a rotatable 3-D plotly scatter of the landmarks, coloured by height.
+
+    Parameters
+    ----------
+    lm : pandas.DataFrame
+        Landmarks (all or curated) with positions, ``height_km``, ``lat_deg``, ``lon_deg``,
+        ``track_length``, ``grade``, ``landmark_id`` and ``outlier``.
+    max_points : int
+        Random subsample size; the browser slows down above about 100k points.
+    title : str, optional
+        Figure title.
+
+    Returns
+    -------
+    plotly.graph_objects.Figure
+
+    Raises
+    ------
+    ImportError
+        If plotly is not installed.
+    """
+    import plotly.graph_objects as go
+
     g = lm[~lm.outlier]
     if len(g) > max_points:
         g = g.sample(max_points, random_state=0)
     lim = float(np.nanpercentile(np.abs(g.height_km), 98))
-    colorscale = [[i / 8, c] for i, c in enumerate(
-        ["#0d366b", "#1c5cab", "#3987e5", "#9ec5f4", "#f0efec", "#f2a3a2", "#e34948", "#b83232", "#7a1f1f"])]
+    colorscale = [[i / (len(DIVERGING_STOPS) - 1), c] for i, c in enumerate(DIVERGING_STOPS)]
     hover = (g.landmark_id + "<br>lat " + g.lat_deg.round(2).astype(str) + "°, lon "
              + g.lon_deg.round(2).astype(str) + "°E<br>h " + g.height_km.round(2).astype(str)
              + " km<br>track " + g.track_length.astype(str) + ", grade " + g.grade)
@@ -470,20 +1137,67 @@ def plot_interactive(ws: Workspace, lm: pd.DataFrame, cams: pd.DataFrame, max_po
         marker=dict(size=1.6, color=g.height_km, colorscale=colorscale, cmin=-lim, cmax=lim,
                     colorbar=dict(title="height (km)"))))
     fig.update_layout(
-        title="Vesta landmark catalog (body-fixed km)", paper_bgcolor=SURFACE,
+        title=title or f"Vesta landmark catalog ({len(g):,} landmarks, body-fixed km)",
+        paper_bgcolor=SURFACE,
         scene=dict(aspectmode="data", xaxis_title="x (km)", yaxis_title="y (km)", zaxis_title="z (km)"),
         margin=dict(l=0, r=0, t=40, b=0), font=dict(color=INK))
+    return fig
+
+
+def plot_interactive(ws: Workspace, lm: pd.DataFrame, max_points: int = 80000) -> Path | None:
+    """Write ``plots/pointcloud.html``, the interactive version of figure 07.
+
+    Parameters
+    ----------
+    ws : Workspace
+        Output workspace.
+    lm : pandas.DataFrame
+        Landmarks, as for :func:`interactive_figure`.
+    max_points : int
+        Random subsample size.
+
+    Returns
+    -------
+    pathlib.Path or None
+        The HTML path, or ``None`` when plotly is not installed. The page loads plotly.js
+        from its CDN, so viewing it needs a network connection.
+    """
+    try:
+        fig = interactive_figure(lm, max_points)
+    except ImportError:
+        log.info("plotly not installed - skipping the interactive page (pip install plotly)")
+        return None
     path = ws.plots / "pointcloud.html"
     fig.write_html(path, include_plotlyjs="cdn")
     log.info("wrote %s", path)
     return path
 
 
+@_styled
 def make_all(ws: Workspace, ds: Dataset, interactive: bool = True) -> list[Path]:
-    _style()
+    """Draw every figure the workspace has data for.
+
+    Geometry needs only ``metadata.csv``; the montage and orientation check need
+    ``prepare.json``; figures 04-11 need the catalog.
+
+    Parameters
+    ----------
+    ws : Workspace
+        Pipeline workspace.
+    ds : Dataset
+        Dataset definition (camera, body radii).
+    interactive : bool
+        Also write ``pointcloud.html`` when plotly is available.
+
+    Returns
+    -------
+    list of pathlib.Path
+        Files written, in figure order.
+    """
     ws.plots.mkdir(parents=True, exist_ok=True)
     meta = load_metadata(ws.metadata_csv)
     colors = _seq_colors(dict.fromkeys(meta.sequence))
+    night = _polar_night(meta["subsolar_lat_deg"]) if "subsolar_lat_deg" in meta else None
     out = [plot_geometry(ws, meta, colors)]
     if ws.prepare_json.exists():
         prep = ws.read_json(ws.prepare_json)
@@ -498,12 +1212,12 @@ def make_all(ws: Workspace, ds: Dataset, interactive: bool = True) -> list[Path]
             plot_features(ws, cams, obs, lm, colors),
             plot_covisibility(ws, cams[cams.registered], obs),
             plot_alignment(ws, cams, colors, summary),
-            plot_pointcloud(ws, lm),
-            plot_map(ws, lm, curated),
+            plot_pointcloud(ws, lm, ds.body.radii_km),
+            plot_map(ws, lm, curated, summary.get("curated_spacing_km"), night),
             plot_quality(ws, lm),
             plot_radius(ws, lm),
             plot_chips(ws, curated, obs, cams),
         ]
         if interactive:
-            out.append(plot_interactive(ws, lm, cams))
+            out.append(plot_interactive(ws, lm))
     return [p for p in out if p is not None]

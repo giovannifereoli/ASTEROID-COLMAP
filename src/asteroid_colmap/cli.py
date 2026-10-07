@@ -16,6 +16,15 @@ log = logging.getLogger("asteroid_colmap")
 
 
 def cmd_download(args, ws: Workspace):
+    """Download the FITS images and labels, then write ``metadata.csv``.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Parsed options (``dataset``, ``filters``, ``subdirs``, ``max_images``, ``workers``).
+    ws : Workspace
+        Working directory; files go to ``ws.raw`` and ``ws.metadata_csv``.
+    """
     from .download import download
     from .metadata import build_metadata
 
@@ -30,6 +39,15 @@ def cmd_download(args, ws: Workspace):
 
 
 def cmd_prepare(args, ws: Workspace):
+    """Convert the FITS images to 8-bit PNGs and feature masks, and write ``prepare.json``.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Parsed options (``dataset``, ``flip``, ``erode``, ``threshold``, ``gamma``).
+    ws : Workspace
+        Working directory with ``metadata.csv``.
+    """
     from .metadata import load_metadata
     from .preprocess import prepare
 
@@ -42,6 +60,18 @@ def cmd_prepare(args, ws: Workspace):
 
 
 def cmd_reconstruct(args, ws: Workspace):
+    """Run COLMAP feature extraction, matching and mapping.
+
+    Every option whose name matches a :class:`~asteroid_colmap.reconstruct.ReconstructionOptions`
+    field, and is not ``None``, overrides that field's default.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Parsed options (``colmap``, ``overwrite``, ``skip_features``, mode and tuning flags).
+    ws : Workspace
+        Working directory with prepared images.
+    """
     from .metadata import load_metadata
     from .reconstruct import ReconstructionOptions, reconstruct
 
@@ -53,6 +83,15 @@ def cmd_reconstruct(args, ws: Workspace):
 
 
 def cmd_catalog(args, ws: Workspace):
+    """Georeference the COLMAP model and write the landmark catalog and ``summary.json``.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Parsed options (``model``, ``min_track``, ``max_height``, ``spacing``).
+    ws : Workspace
+        Working directory with a finished reconstruction.
+    """
     from .catalog import build_catalog, summarize, write_catalog
     from .georef import georeference
     from .metadata import load_metadata
@@ -75,6 +114,20 @@ def cmd_catalog(args, ws: Workspace):
 
 
 def cmd_plot(args, ws: Workspace):
+    """Draw every available figure into ``<workdir>/plots`` and print the paths.
+
+    Selects the non-interactive ``Agg`` backend first, so it runs without a display.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Parsed options (``dataset``, ``no_html``).
+    ws : Workspace
+        Working directory.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
     from .plots import make_all
 
     paths = make_all(ws, get_dataset(args.dataset), interactive=not args.no_html)
@@ -83,6 +136,15 @@ def cmd_plot(args, ws: Workspace):
 
 
 def cmd_compare(args, ws: Workspace):
+    """Compare this workspace's catalog with another one and print the result as JSON.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Parsed options (``other``, ``min_shared``).
+    ws : Workspace
+        First working directory.
+    """
     import json
 
     from .catalog import compare_catalogs
@@ -94,6 +156,15 @@ def cmd_compare(args, ws: Workspace):
 
 
 def cmd_run(args, ws: Workspace):
+    """Run download (unless ``--skip-download``), prepare, reconstruct, catalog and plot.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Union of the options of every step.
+    ws : Workspace
+        Working directory.
+    """
     if not args.skip_download:
         cmd_download(args, ws)
     cmd_prepare(args, ws)
@@ -103,6 +174,15 @@ def cmd_run(args, ws: Workspace):
 
 
 def cmd_info(args, ws: Workspace):
+    """Print the known datasets and, if present, the workspace's catalog summary.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Parsed options (unused apart from the workspace).
+    ws : Workspace
+        Working directory.
+    """
     for key, ds in DATASETS.items():
         cam = get_camera(ds.camera)
         print(f"{key}: {ds.description}")
@@ -115,6 +195,7 @@ def cmd_info(args, ws: Workspace):
 
 
 def _print_summary(s: dict):
+    """Print the key numbers of a catalog ``summary.json`` dictionary."""
     a = s["alignment"]
     print(f"registered images : {s['num_registered_images']}/{s['num_input_images']} "
           f"{s['registered_by_sequence']}")
@@ -127,11 +208,13 @@ def _print_summary(s: dict):
 
 
 def _add_common(p):
+    """Add ``--workdir`` and ``--dataset`` to a sub-command parser."""
     p.add_argument("--workdir", "-w", default="work", help="working directory (default: ./work)")
     p.add_argument("--dataset", "-d", default="vesta-rc3", choices=sorted(DATASETS))
 
 
 def _add_download(p):
+    """Add the options of the ``download`` step."""
     p.add_argument("--filters", type=int, nargs="+", default=[1], help="FC filter numbers")
     p.add_argument("--subdirs", nargs="+", help="archive sub-directories (default: all)")
     p.add_argument("--max-images", type=int, help="evenly sub-sample to at most N images")
@@ -139,6 +222,7 @@ def _add_download(p):
 
 
 def _add_prepare(p):
+    """Add the options of the ``prepare`` step."""
     p.add_argument("--flip", default="auto", choices=["auto", "none", "ud", "lr", "rot180"],
                    help="array flip applied to the FITS data (auto: match the label geometry)")
     p.add_argument("--erode", type=float, default=8.0, help="mask erosion from limb/terminator, px")
@@ -147,6 +231,7 @@ def _add_prepare(p):
 
 
 def _add_reconstruct(p):
+    """Add the options of the ``reconstruct`` step (defaults live in ``ReconstructionOptions``)."""
     p.add_argument("--colmap", help="path to the colmap executable")
     p.add_argument("--overwrite", action="store_true", help="delete an existing database")
     p.add_argument("--skip-features", action="store_true", help="reuse database, re-run mapper")
@@ -167,6 +252,7 @@ def _add_reconstruct(p):
 
 
 def _add_catalog(p):
+    """Add the options of the ``catalog`` step."""
     p.add_argument("--model", help="TXT model directory (default: largest COLMAP model)")
     p.add_argument("--min-track", type=int, default=3)
     p.add_argument("--max-height", type=float, default=60.0,
@@ -175,15 +261,24 @@ def _add_catalog(p):
 
 
 def _add_compare(p):
+    """Add the options of the ``compare`` step."""
     p.add_argument("--other", required=True, help="second working directory (same database)")
     p.add_argument("--min-shared", type=int, default=3, help="keypoints two landmarks must share")
 
 
 def _add_plot(p):
+    """Add the options of the ``plot`` step."""
     p.add_argument("--no-html", action="store_true", help="skip the interactive Plotly page")
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Build the ``asteroid-colmap`` argument parser with one sub-command per step.
+
+    Returns
+    -------
+    argparse.ArgumentParser
+        Parser whose sub-commands set ``args.func`` to the matching ``cmd_*`` function.
+    """
     parser = argparse.ArgumentParser(
         prog="asteroid-colmap",
         description="Dawn FC images of Vesta -> COLMAP -> body-fixed landmark catalog + plots.")
@@ -214,6 +309,19 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> int:
+    """Entry point of the ``asteroid-colmap`` command.
+
+    Parameters
+    ----------
+    argv : list of str, optional
+        Command-line arguments without the program name; defaults to ``sys.argv[1:]``.
+
+    Returns
+    -------
+    int
+        Exit status: 0 on success, 1 when a step fails with a missing file, an existing
+        file or a runtime error (the error is logged instead of raised).
+    """
     args = build_parser().parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s", datefmt="%H:%M:%S")

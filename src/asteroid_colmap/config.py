@@ -11,7 +11,27 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Body:
-    """IAU-style rotation model and reference ellipsoid of a target body."""
+    """IAU-style rotation model and reference ellipsoid of a target body.
+
+    The pole is fixed at ``(pole_ra_deg, pole_dec_deg)`` in J2000 and the prime meridian
+    angle is ``W = w0_deg + w_rate_deg_per_day * d``, with ``d`` the TDB days since J2000
+    (no precession or nutation terms).
+
+    Attributes
+    ----------
+    name : str
+        Body name.
+    pole_ra_deg, pole_dec_deg : float
+        Right ascension and declination of the north pole, J2000 (deg).
+    w0_deg : float
+        Prime meridian angle at J2000 (deg).
+    w_rate_deg_per_day : float
+        Rotation rate of the prime meridian (deg/day).
+    radii_km : tuple of float
+        Reference ellipsoid semi-axes ``(a, b, c)`` (km).
+    frame_name : str
+        Description of the body-fixed frame and its longitude convention.
+    """
 
     name: str
     pole_ra_deg: float
@@ -40,6 +60,25 @@ VESTA = Body(
 
 @dataclass(frozen=True)
 class Dataset:
+    """A downloadable image set: archive location, target body and camera.
+
+    Attributes
+    ----------
+    key : str
+        Identifier used on the command line (``--dataset``).
+    description : str
+        One-line description.
+    base_url : str
+        Archive URL of the directory that holds ``subdirs``; ends with ``/``.
+    subdirs : tuple of str
+        Sub-directories (observation sequences) to list and download.
+    body : Body
+        Target body.
+    camera : str
+        Key in :data:`asteroid_colmap.camera.CAMERAS`.
+    default_filters : tuple of int
+        FC filter numbers downloaded when none are requested.
+    """
     key: str
     description: str
     base_url: str
@@ -66,6 +105,22 @@ DATASETS: dict[str, Dataset] = {
 
 
 def get_dataset(key: str) -> Dataset:
+    """Look up a dataset preset.
+
+    Parameters
+    ----------
+    key : str
+        Key in :data:`DATASETS`, e.g. ``"vesta-rc3"``.
+
+    Returns
+    -------
+    Dataset
+
+    Raises
+    ------
+    KeyError
+        If ``key`` is unknown; the message lists the available keys.
+    """
     try:
         return DATASETS[key]
     except KeyError:

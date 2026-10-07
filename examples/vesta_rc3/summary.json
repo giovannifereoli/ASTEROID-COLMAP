@@ -5,66 +5,66 @@
     "RC3": 65,
     "RC3B": 65
   },
-  "num_landmarks": 110281,
-  "num_curated_landmarks": 7509,
-  "num_outliers": 1,
+  "num_landmarks": 94576,
+  "num_curated_landmarks": 7487,
+  "curated_spacing_km": 10.0,
+  "num_outliers": 3,
   "grades": {
-    "A": 43377,
-    "B": 46662,
-    "C": 20242
+    "A": 33962,
+    "B": 41026,
+    "C": 19588
   },
-  "num_observations": 1044759,
-  "median_track_length": 7.0,
-  "median_reproj_error_px": 0.24115273807337542,
-  "median_tri_angle_deg": 34.72012809517267,
+  "num_observations": 824085,
+  "median_track_length": 6.0,
+  "median_reproj_error_px": 0.23776193389318853,
+  "median_tri_angle_deg": 34.46357034139144,
   "height_km_p05_p50_p95": [
-    -9.751,
-    -0.864,
-    8.248
+    -9.736,
+    -0.869,
+    8.315
   ],
   "lat_range_deg": [
-    -89.94255773391114,
-    83.49888569669798
+    -89.93854852714915,
+    55.943525142862626
   ],
-  "label_pointing_offset_median_px": 2.335633290347161,
+  "label_pointing_offset_median_px": 2.3655743704852137,
   "alignment": {
     "num_aligned_images": 130,
     "num_used_in_fit": 130,
-    "scale_km_per_unit": 1.0001162924388853,
-    "position_rms_km": 2.2643377432820078,
-    "position_max_km": 3.823328977320879,
-    "attitude_median_deg": 0.021994512676992102,
-    "attitude_max_deg": 0.051294893105853244,
-    "boresight_median_px": 3.5917018869679342,
+    "scale_km_per_unit": 1.0002790372026449,
+    "position_rms_km": 2.1498216253808278,
+    "position_max_km": 3.82473209829786,
+    "attitude_median_deg": 0.022515378371667567,
+    "attitude_max_deg": 0.05425939326755591,
+    "boresight_median_px": 3.747808113055892,
     "mirrored_or_reversed": false
   },
   "similarity": {
-    "scale_km_per_unit": 1.0001162924388853,
+    "scale_km_per_unit": 1.0002790372026449,
     "R": [
       [
-        0.9999999853831759,
-        9.079975522519648e-05,
-        -0.00014487599057817134
+        0.9999999486744169,
+        0.0002471272859089508,
+        -0.00020390994855459484
       ],
       [
-        -9.079934529370019e-05,
-        0.9999999958737181,
-        2.8361085286659143e-06
+        -0.0002471297562321009,
+        0.9999999693903605,
+        -1.2089667745209042e-05
       ],
       [
-        0.0001448762474983399,
-        -2.8229538426270885e-06,
-        0.999999989501452
+        0.00020390695462620972,
+        1.2140059340814193e-05,
+        0.9999999791372859
       ]
     ],
     "t_km": [
-      0.4767921470863783,
-      -0.4370728816674543,
-      1.224653573879209
+      0.13807967625272255,
+      0.1342222377285509,
+      1.0910956153906
     ]
   },
   "image_flip": "ud",
   "colmap": "COLMAP 4.2.0.dev0 (Commit 752198c7 on 2026-07-06 without CUDA)",
-  "selected_model": "work/colmap/model_txt/round2_adjusted",
-  "curated_spacing_km": 10.0
+  "selected_model": "work/colmap/model_txt/round2_adjusted"
 }

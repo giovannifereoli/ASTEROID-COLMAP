@@ -13,6 +13,23 @@ from .geometry import quat_to_matrix
 
 @dataclass
 class SparseModel:
+    """A COLMAP sparse model as tables.
+
+    Attributes
+    ----------
+    cameras : pandas.DataFrame
+        ``camera_id``, ``model``, ``width``, ``height``, ``params`` (list of float).
+    images : pandas.DataFrame
+        ``image_id``, ``name``, ``camera_id``, quaternion ``qw..qz`` and translation
+        ``tx..tz`` (world -> camera), ``R`` (``(3, 3)`` rotation, world -> camera) and
+        ``center`` (``(3,)`` camera centre in world coordinates).
+    points : pandas.DataFrame
+        ``point3d_id``, ``x``, ``y``, ``z``, colour ``r``, ``g``, ``b``, mean reprojection
+        ``error`` (px) and ``track_length``.
+    observations : pandas.DataFrame
+        One row per track element: ``point3d_id``, ``image_id``, ``point2d_idx`` and the
+        keypoint position ``u``, ``v`` (px, COLMAP convention).
+    """
     cameras: pd.DataFrame  # camera_id, model, width, height, params
     images: pd.DataFrame  # image_id, name, camera_id, qw..qz, tx..tz, R (3x3), center (3,)
     points: pd.DataFrame  # point3d_id, x, y, z, r, g, b, error, track_length
@@ -20,16 +37,32 @@ class SparseModel:
 
     @property
     def num_images(self) -> int:
+        """Number of registered images."""
         return len(self.images)
 
     def image_centers(self) -> np.ndarray:
+        """Camera centres in world coordinates.
+
+        Returns
+        -------
+        numpy.ndarray
+            ``(N, 3)``, in the row order of :attr:`images`.
+        """
         return np.stack(self.images["center"].to_numpy())
 
     def image_rotations(self) -> np.ndarray:
+        """World -> camera rotations.
+
+        Returns
+        -------
+        numpy.ndarray
+            ``(N, 3, 3)``, in the row order of :attr:`images`.
+        """
         return np.stack(self.images["R"].to_numpy())
 
 
 def _data_lines(path: Path):
+    """Yield the non-empty, non-comment lines of a COLMAP TXT file."""
     with open(path) as fh:
         for line in fh:
             if line.strip() and not line.startswith("#"):
@@ -37,6 +70,18 @@ def _data_lines(path: Path):
 
 
 def read_cameras(path: Path) -> pd.DataFrame:
+    """Read ``cameras.txt``.
+
+    Parameters
+    ----------
+    path : pathlib.Path
+        COLMAP ``cameras.txt``.
+
+    Returns
+    -------
+    pandas.DataFrame
+        ``camera_id``, ``model``, ``width``, ``height`` and ``params`` (list of float).
+    """
     rows = []
     for line in _data_lines(path):
         p = line.split()
@@ -46,7 +91,21 @@ def read_cameras(path: Path) -> pd.DataFrame:
 
 
 def read_images(path: Path) -> tuple[pd.DataFrame, dict[int, np.ndarray]]:
-    """Image poses and, per image, the (N, 3) array of keypoints ``x, y, point3d_id``."""
+    """Read ``images.txt``: image poses and their keypoints.
+
+    Parameters
+    ----------
+    path : pathlib.Path
+        COLMAP ``images.txt``.
+
+    Returns
+    -------
+    images : pandas.DataFrame
+        See :attr:`SparseModel.images`; ``center = -R^T t``.
+    keypoints : dict of int to numpy.ndarray
+        Per ``image_id``, an ``(N, 3)`` array of ``x``, ``y`` (px) and ``point3d_id``
+        (-1 when the keypoint has no 3-D point).
+    """
     rows, kps = [], {}
     lines = _data_lines_keep_empty(path)
     for header, pts in zip(lines[0::2], lines[1::2]):
@@ -64,12 +123,31 @@ def read_images(path: Path) -> tuple[pd.DataFrame, dict[int, np.ndarray]]:
 
 
 def _data_lines_keep_empty(path: Path) -> list[str]:
-    # every image takes exactly two lines; the keypoint line may be empty
+    """Non-comment lines of a COLMAP TXT file, empty lines included.
+
+    In ``images.txt`` every image takes exactly two lines and the keypoint line may be
+    empty, so empty lines must be kept to stay in step.
+    """
     with open(path) as fh:
         return [ln.rstrip("\n") for ln in fh if not ln.startswith("#")]
 
 
 def read_points(path: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Read ``points3D.txt``: 3-D points and their tracks.
+
+    Parameters
+    ----------
+    path : pathlib.Path
+        COLMAP ``points3D.txt``.
+
+    Returns
+    -------
+    points : pandas.DataFrame
+        ``point3d_id``, ``x``, ``y``, ``z``, ``r``, ``g``, ``b``, ``error`` (px) and
+        ``track_length``.
+    observations : pandas.DataFrame
+        One row per track element: ``point3d_id``, ``image_id``, ``point2d_idx``.
+    """
     pts, tracks = [], []
     for line in _data_lines(path):
         p = line.split()
@@ -84,6 +162,19 @@ def read_points(path: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 
 def read_model(model_dir: str | Path) -> SparseModel:
+    """Read a COLMAP TXT model directory.
+
+    Parameters
+    ----------
+    model_dir : str or pathlib.Path
+        Directory with ``cameras.txt``, ``images.txt`` and ``points3D.txt``.
+
+    Returns
+    -------
+    SparseModel
+        With the keypoint position ``u``, ``v`` of every observation looked up from
+        ``images.txt``.
+    """
     d = Path(model_dir)
     cameras = read_cameras(d / "cameras.txt")
     images, kps = read_images(d / "images.txt")
@@ -99,4 +190,15 @@ def read_model(model_dir: str | Path) -> SparseModel:
 
 
 def count_registered_images(model_dir: str | Path) -> int:
+    """Number of images in a COLMAP TXT model, without parsing it.
+
+    Parameters
+    ----------
+    model_dir : str or pathlib.Path
+        Directory with ``images.txt``.
+
+    Returns
+    -------
+    int
+    """
     return len(_data_lines_keep_empty(Path(model_dir) / "images.txt")) // 2

@@ -18,6 +18,12 @@ _HREF = re.compile(r'href="([^"?/#]+)"', re.IGNORECASE)
 
 
 def _scalar(token: str) -> Any:
+    """Convert one PDS3 value token to ``int``, ``float``, ``str`` or ``None``.
+
+    A trailing ``<unit>`` is dropped. Double-quoted strings have their whitespace
+    collapsed. ``"N/A"``, ``N/A``, ``'N/A'``, ``NULL`` and ``UNK`` become ``None``. Other
+    tokens are tried as ``int``, then ``float``, and otherwise returned as text.
+    """
     tok = _UNIT.sub("", token.strip())
     if len(tok) >= 2 and tok[0] == tok[-1] == '"':
         text = " ".join(tok[1:-1].split())
@@ -33,6 +39,7 @@ def _scalar(token: str) -> Any:
 
 
 def _value(raw: str) -> Any:
+    """Convert a raw PDS3 value; a parenthesised list becomes a tuple of scalars."""
     raw = raw.strip()
     if raw.startswith("(") and raw.endswith(")"):
         return tuple(_scalar(x) for x in _ITEM.findall(raw[1:-1]) if x.strip())
@@ -40,11 +47,28 @@ def _value(raw: str) -> Any:
 
 
 def _incomplete(value: str) -> bool:
+    """True if a value continues on the next line (empty, or unclosed ``(`` or quote)."""
     return value == "" or value.count("(") > value.count(")") or value.count('"') % 2 == 1
 
 
 def parse_label(text: str) -> dict[str, Any]:
-    """Parse PDS3 label text into a flat ``{key: value}`` dict."""
+    """Parse PDS3 label text into a flat ``{key: value}`` dict.
+
+    Keys inside OBJECT/GROUP blocks are prefixed with the block names, joined by dots
+    (e.g. ``IMAGE.LINES``). Parenthesised values become tuples, units are dropped and
+    N/A-type values become ``None``. Comments are skipped and parsing stops at the first
+    ``END`` line.
+
+    Parameters
+    ----------
+    text : str
+        Label text.
+
+    Returns
+    -------
+    dict
+        Keywords in file order.
+    """
     out: dict[str, Any] = {}
     stack: list[str] = []
     lines = text.splitlines()
@@ -71,9 +95,32 @@ def parse_label(text: str) -> dict[str, Any]:
 
 
 def read_label(path: str | Path) -> dict[str, Any]:
+    """Read and parse a PDS3 label file (latin-1 encoded).
+
+    Parameters
+    ----------
+    path : str or pathlib.Path
+        Detached ``.LBL`` file.
+
+    Returns
+    -------
+    dict
+        See :func:`parse_label`.
+    """
     return parse_label(Path(path).read_text(encoding="latin-1"))
 
 
 def parse_listing(html: str) -> list[str]:
-    """File names linked from an Apache ``Index of`` page."""
+    """File names linked from an Apache ``Index of`` page.
+
+    Parameters
+    ----------
+    html : str
+        Page source.
+
+    Returns
+    -------
+    list of str
+        Sorted unique ``href`` targets, without sort links and sub-directories.
+    """
     return sorted({name for name in _HREF.findall(html) if not name.startswith("?")})

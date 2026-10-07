@@ -27,22 +27,24 @@ latitudes −16° to −27° at a phase angle of 13° to 8°.
 | | label-poses mode (default) | incremental mode (check) |
 |---|---|---|
 | registered images | 130 / 130 | 130 / 130 |
-| landmarks (track ≥ 3) | 110,281 | 109,821 |
-| grades A / B / C | 43,377 / 46,662 / 20,242 | 43,776 / 46,316 / 19,729 |
-| curated set (one per 10 × 10 km cell) | 7,509 (A 6,625 / B 884) | 7,517 |
-| observations | 1,044,759 | 1,050,617 |
-| median track length / reprojection error | 7 / 0.24 px | 7 / 0.24 px |
-| median triangulation angle | 34.7° | 35.0° |
-| camera-centre residual vs label (RMS) | 2.26 km | 2.10 km |
-| attitude difference vs label (median) | 79″ | 78″ |
-| COLMAP mapping time (CPU) | **35 s** | 284 s |
+| landmarks (track ≥ 3) | 94,576 | 94,331 |
+| grades A / B / C | 33,962 / 41,026 / 19,588 | 34,364 / 40,875 / 19,092 |
+| curated set (one per 10 × 10 km cell) | 7,487 (A 6,384 / B 1,103) | 7,495 |
+| observations | 824,085 | 829,685 |
+| median track length / reprojection error | 6 / 0.24 px | 6 / 0.24 px |
+| median triangulation angle | 34.5° | 34.7° |
+| camera-centre residual vs label (RMS) | 2.15 km | 2.11 km |
+| attitude difference vs label (median) | 81″ | 74″ |
+| COLMAP mapping time (CPU) | **30 s** | 226 s |
 
-The two modes match 98,975 landmarks to each other through shared keypoints. The two catalogs differ by
-a common offset of about 0.12 km, and after removing it they agree to **15 m median and 45 m p90**.
-See [Validation](#validation-two-independent-mapping-modes) below.
+Each landmark is one surface feature: no two landmarks share a keypoint, and no landmark is measured
+twice in one image (see the [duplicate-keypoint pitfall](#mapping-modes)). The two modes match 92,292
+landmarks to each other through shared keypoints. The two catalogs differ by a common offset of about
+0.10 km, and after removing it they agree to **16 m median and 46 m p90**. See
+[Validation](#validation-two-independent-mapping-modes) below.
 
-Heights above the 286.3 × 278.6 × 223.2 km ellipsoid range from −9.8 km (p5) to +8.2 km (p95).
-99 % of the landmarks lie between 74°S and 44°N; the curated set reaches 89°S and 56°N. The north had
+Heights above the 286.3 × 278.6 × 223.2 km ellipsoid range from −9.7 km (p5) to +8.3 km (p95).
+99 % of the landmarks lie between 78°S and 46°N; the curated set reaches 89°S and 56°N. The north had
 not been mapped yet because it was in polar night during the approach.
 
 ## Installation
@@ -93,9 +95,9 @@ These options are the most useful (`asteroid-colmap <step> -h` lists the rest):
 | `--skip-features` | reconstruct | reuse the feature database and re-run mapping only |
 | `--spacing 10` | catalog | cell size (km) of the curated subset |
 
-On an Apple-silicon laptop with CPU-only COLMAP, feature extraction takes 0.8 min, matching 5.2 min, and
-mapping 35 s in label-poses mode or 4.7 min in incremental mode. A workspace takes about 1 GB: the raw
-FITS are 540 MB, the COLMAP database 240 MB, and the catalog 170 MB, most of it `observations.csv`.
+On an Apple-silicon laptop with CPU-only COLMAP, feature extraction takes 0.8 min, matching 3.1 min, and
+mapping 30 s in label-poses mode or 3.8 min in incremental mode. A workspace takes about 1 GB: the raw
+FITS are 540 MB, the COLMAP database 190 MB, and the catalog 150 MB, most of it `observations.csv`.
 
 ## Pipeline
 
@@ -108,13 +110,15 @@ FITS are 540 MB, the COLMAP database 240 MB, and the catalog 170 MB, most of it 
    It also detects the array orientation by comparing the observed lit disk with the disk predicted
    from the label geometry. The stored FITS rows are bottom-up, so `ud` is selected
    ([figure 03](examples/vesta_rc3/plots/03_orientation_check.png)).
-3. **reconstruct** extracts SIFT features with the intrinsics held fixed. The OPENCV model comes from
-   the instrument kernel: fx = 10716.2 px, fy = 10723.1 px, k1 = 0.189. Image pairs are chosen from the
-   label viewing geometry, then matched with guided matching. Mapping uses one of the two modes below.
+3. **reconstruct** extracts DSP-SIFT features with the intrinsics held fixed, and keeps one keypoint
+   per pixel. The OPENCV model comes from the instrument kernel: fx = 10716.2 px, fy = 10723.1 px,
+   k1 = 0.189. Image pairs are chosen from the label viewing geometry, then matched with guided
+   matching. Mapping uses one of the two modes below.
 4. **catalog** fits a robust similarity transform (Umeyama, outlier-trimmed) from the COLMAP camera
-   centres to the label spacecraft positions in the body-fixed frame. It converts every point to
-   km, latitude/longitude and height above the ellipsoid, then grades the points, picks a curated
-   subset, and writes each observation in three pixel conventions.
+   centres to the label spacecraft positions in the body-fixed frame. It keeps one observation per
+   landmark and image, converts every point to km, latitude/longitude and height above the
+   ellipsoid, then grades the points, picks a curated subset, and writes each observation in three
+   pixel conventions.
 5. **plot** writes 11 figures and an interactive Plotly point cloud.
 
 ### Mapping modes
@@ -126,7 +130,7 @@ This mode has three advantages:
 - The model is born in the body-fixed frame and in km.
 - It needs no initial image pair. With a 5.5° field of view the views are nearly affine, so two-view
   geometry is weakly conditioned.
-- It is 8× faster.
+- It is about 7× faster.
 
 `incremental` runs COLMAP's standard `mapper` from scratch without any prior poses. The result is
 tied to the body frame afterwards, by the same similarity fit used in the catalog step. This makes it
@@ -138,6 +142,16 @@ an independent check on both the label pointing and the label-poses catalog.
 > ratio is 10.47, so every mapping call here raises the limit to 2 × the camera's ratio. Any
 > narrow-angle camera, for example an OSIRIS-REx PolyCam, NEAR MSI or Hera AFC, hits the same wall.
 
+> **Duplicate-keypoint pitfall.** SIFT gives a keypoint with two dominant gradient directions a second
+> orientation, and stores it as a second keypoint at the same pixel. The copies can join different
+> tracks, so one surface feature becomes two landmarks, typically about 0.5 km apart. COLMAP's covariant
+> extractor, which it uses for DSP-SIFT and affine-shape SIFT, ignores
+> `SiftExtraction.max_num_orientations`, so setting that option to 1 changes nothing. On RC3, 18 % of
+> the keypoints were such copies, and half of the landmarks shared a keypoint with another landmark.
+> The package therefore keeps one keypoint per pixel in the database after extraction. The catalog also
+> keeps one observation per landmark and image, because COLMAP occasionally puts two distinct
+> keypoints of one image, a few pixels apart, in the same track.
+
 ## Catalog files
 
 All files are written to `<workdir>/catalog/`. Example copies from the RC3 run are in
@@ -146,7 +160,7 @@ All files are written to `<workdir>/catalog/`. Example copies from the RC3 run a
 | file | content |
 |---|---|
 | `landmarks.csv` | every point with track ≥ 3: `landmark_id`, `x/y/z_km`, `lat/lon_deg`, `radius_km`, `height_km`, `track_length`, `reproj_error_px`, `max_tri_angle_deg`, `mean_range_km`, `gsd_km`, `gray`, `grade`, `outlier` |
-| `landmarks_curated.csv` | the best grade A/B landmark per equal-area 10 km cell (7,509 for RC3) |
+| `landmarks_curated.csv` | the best grade A/B landmark per equal-area 10 km cell (7,487 for RC3) |
 | `observations.csv` | one row per (landmark, image), described below |
 | `cameras.csv` | per image: geometry from the label, registration, landmark count, reprojection RMS, and position, attitude and boresight residuals relative to the label |
 | `landmarks.ply` | point cloud in km, body-fixed (for MeshLab or CloudCompare) |
@@ -175,19 +189,61 @@ Each row of `observations.csv` holds:
 
 ## Figures
 
-| | |
+All figures share one house style, applied inside each plot call, so importing the package does not
+change your matplotlib settings. Height above the ellipsoid always uses the same diverging
+blue-white-red scale, centred on 0 km.
+
+| figure | content |
 |---|---|
-| `01_montage` input frames, oriented | `07_pointcloud` 3-D landmarks coloured by height |
-| `02_geometry` sub-spacecraft track, phase and range | `08_landmark_map` equirectangular map with the curated set |
-| `03_orientation_check` predicted vs observed lit disk per flip | `09_quality` track length, angle and error with the grade thresholds |
-| `04_features` triangulated keypoints on the best images | `10_radius_vs_latitude` height above the ellipsoid (Rheasilvia in the south) |
-| `05_covisibility` landmarks shared by each image pair | `11_landmark_chips` image patches of grade A landmarks across views |
-| `06_alignment` residuals between COLMAP and the label poses | `pointcloud.html` interactive Plotly point cloud with the cameras |
+| `01_montage` | prepared input frames, evenly spaced in time |
+| `02_geometry` | sub-spacecraft ground track with the polar-night band; range and phase against hours since sequence start |
+| `03_orientation_check` | observed silhouettes against the label-predicted lit ellipsoid, for every flip |
+| `04_features` | landmark observations on the best-connected image of each sequence |
+| `05_covisibility` | landmarks shared by every image pair |
+| `06_alignment` | per-image position residual, boresight offset and twist relative to the label poses |
+| `07_pointcloud` | four orthographic globe views of the landmarks, coloured by height |
+| `08_landmark_map` | equirectangular map by height, curated subset by track length, and a south-polar view of Rheasilvia |
+| `09_quality` | track length, reprojection error, triangulation angle and height, stacked by grade, with the grade thresholds |
+| `10_radius_vs_latitude` | height against latitude as a log-density hexbin, with the median and quartiles per 5° band |
+| `11_landmark_chips` | image patches of grade A landmarks across their views |
+| `pointcloud.html` | rotatable Plotly point cloud (needs the `interactive` extra) |
 
 <p align="center">
-  <img src="examples/vesta_rc3/plots/07_pointcloud.png" width="49%" alt="Point cloud">
-  <img src="examples/vesta_rc3/plots/06_alignment.png" width="49%" alt="Alignment residuals">
+  <img src="examples/vesta_rc3/plots/07_pointcloud.png" width="100%" alt="Orthographic globe views of the landmarks">
 </p>
+<p align="center">
+  <img src="examples/vesta_rc3/plots/06_alignment.png" width="49%" alt="Pose residuals against the label">
+  <img src="examples/vesta_rc3/plots/09_quality.png" width="49%" alt="Landmark quality by grade">
+</p>
+
+## Notebook
+
+[notebooks/test_everything.ipynb](notebooks/test_everything.ipynb) checks the whole package in one
+place. It:
+
+* runs the unit tests;
+* exercises the camera, rotation model, label parser and grading;
+* recomputes the catalog invariants, the alignment statistics, the duplicate-keypoint checks and the
+  mode comparison from the CSV files;
+* redraws every figure.
+
+Each check prints `✓` or `✗`, and the last cell fails if any check failed.
+
+The notebook reads the workspace named by `ASTEROID_COLMAP_WORKDIR`, or `work/` if that exists. If
+the second-mode catalog is in `ASTEROID_COLMAP_OTHER` or `work_inc/`, it also recomputes the mode
+comparison. Without a workspace it falls back to the RC3 results in `examples/vesta_rc3`: no download
+and no COLMAP needed, but only the checks that the curated subset supports. Set
+`RUN_PIPELINE = True` in its first code cell to run the full pipeline from the notebook.
+
+```bash
+pip install -e ".[notebook,interactive]"
+jupyter lab notebooks/test_everything.ipynb
+# or headless, saving the outputs into the notebook:
+jupyter execute --inplace notebooks/test_everything.ipynb
+```
+
+The committed copy was run on the full RC3 workspace, where all 56 checks pass. With only the
+committed examples, 42 checks run and pass.
 
 ## Validation: two independent mapping modes
 
@@ -205,11 +261,11 @@ asteroid-colmap compare     -w work --other work_inc
 
 The RC3 results are in [compare_incremental.json](examples/vesta_rc3/compare_incremental.json):
 
-- 98,975 of about 110,000 landmarks are matched.
-- The 3-D distance between matched landmarks is 117 m median and 148 m p90.
-- Nearly all of that distance is a common offset of (92, −61, −43) m. After removing it, the distance
-  is **15 m median and 45 m p90**.
-- The height difference is 3 m median and 116 m |p90|.
+- 92,292 of about 94,500 landmarks are matched.
+- The 3-D distance between matched landmarks is 98 m median and 124 m p90.
+- Nearly all of that distance is a common offset of (31, 94, −15) m. After removing it, the distance
+  is **16 m median and 46 m p90**.
+- The height difference is 12 m median and 96 m |p90|.
 
 Shape is therefore reproducible to a few tens of metres, a small fraction of the 490 m pixel. The
 absolute position is set by how each mode is tied to the labels.
@@ -217,11 +273,11 @@ absolute position is set by how each mode is tied to the labels.
 ## Accuracy and caveats
 
 - **Absolute position is about 0.1–0.2 km.** The catalog frame is tied to the PDS label poses. The
-  camera centres fit those poses with an RMS of 2.3 km, and averaging that over 130 images leaves
-  roughly 0.2 km of frame uncertainty. This matches the 0.12 km offset between the two modes.
+  camera centres fit those poses with an RMS of 2.2 km, and averaging that over 130 images leaves
+  roughly 0.2 km of frame uncertainty. This matches the 0.10 km offset between the two modes.
 - **Lateral position and pointing are degenerate.** A 5.5° camera at 5,500 km cannot tell a 2 km
-  lateral shift of the spacecraft from a 0.02° (about 80″) pointing change. The 2.26 km position RMS
-  and the 79″ attitude median are the same effect. Treat the refined camera poses as a consistent pair,
+  lateral shift of the spacecraft from a 0.02° (about 80″) pointing change. The 2.15 km position RMS
+  and the 81″ attitude median are the same effect. Treat the refined camera poses as a consistent pair,
   not as independent estimates.
 - **Coverage is limited by lighting.** Only the sunlit southern and equatorial terrain is mapped; the
   north was in polar night. Later Dawn phases (Survey, HAMO, LAMO) fill the gaps, and the archive
@@ -250,7 +306,7 @@ calibration. It is not the tool that builds the catalog.
 ## Tests
 
 ```bash
-pytest -q        # 37 tests, < 1 s, no network and no COLMAP needed
+pytest -q        # 40 tests, < 1 s, no network and no COLMAP needed
 ```
 
 The tests cover:
@@ -261,6 +317,7 @@ The tests cover:
 - the camera projection round trip and pixel-frame conversions;
 - COLMAP TXT model I/O;
 - the label-pose seed model;
+- the one-keypoint-per-pixel database clean-up and the one-observation-per-image rule;
 - pair selection;
 - landmark grading, equal-area cells and catalog comparison.
 

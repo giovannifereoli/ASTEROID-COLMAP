@@ -36,11 +36,11 @@ images together with SPICE kernels.
 
 | criterion | COLMAP | GIANT |
 |---|---|---|
-| Builds landmarks from images alone | **Yes.** Multi-view tracks and bundle adjustment; RC3 gives 110,281 landmarks (7,509 curated) | **No.** See the note on GIANT's landmark modes below this table |
+| Builds landmarks from images alone | **Yes.** Multi-view tracks and bundle adjustment; RC3 gives 94,576 landmarks (7,487 curated) | **No.** See the note on GIANT's landmark modes below this table |
 | Prior information needed | Intrinsics only. The label poses serve as an optional seed and as the datum for the frame | A shape model or DEM for SFN, templates, limbs and ray tracing; SPICE for geometry |
 | Narrow-angle camera (5.5° FOV, f/w = 10.47) | Works after raising `Mapper.max_focal_length_ratio`. Otherwise COLMAP silently triangulates nothing | Native. Built for spacecraft cameras, with OpenCV, Owen and Brown models |
 | Output | Sparse model (cameras, images, points3D); this package turns it into a body-fixed catalog | Navigation measurements and residuals, star-based attitude, calibrated camera models |
-| Runtime on RC3 (CPU) | 0.8 min features, 5.2 min matching, 35 s mapping (label poses) or 4.7 min (incremental) | Not measured: the import fails, see the install log |
+| Runtime on RC3 (CPU) | 0.8 min features, 3.1 min matching, 30 s mapping (label poses) or 3.8 min (incremental) | Not measured: the import fails, see the install log |
 | Install on macOS arm64 with Python 3.14 | Prebuilt binary (`brew install colmap`, conda-forge, apt) | `pip install` from git failed in three successive ways (see the install log) |
 | Used in flight | Common in planetary science research; not a flight OpNav tool | OSIRIS-REx OpNav heritage |
 
@@ -73,9 +73,13 @@ shape-model requirement.
 ## What was done
 
 - **COLMAP:** the full pipeline in this package. It was run in two independent mapping modes, which
-  agree to 15 m median and 45 m p90 after removing a common 0.12 km offset; see the README.
+  agree to 16 m median and 46 m p90 after removing a common 0.10 km offset; see the README.
   - Pitfall found: COLMAP's default focal-length-ratio limit of 10 is below the FC's 10.47. Above that
     limit COLMAP discards the camera as bogus without raising an error.
+  - Pitfall found: with DSP-SIFT, COLMAP's covariant extractor ignores
+    `SiftExtraction.max_num_orientations`. 18 % of the RC3 keypoints were second-orientation copies
+    at the same pixel, and they turned single surface features into duplicate landmarks. The
+    package removes the copies from the database after extraction.
 - **GIANT:** a review of the repository, including the changelog, module tree, the
   constraint-matching and SFN sources, the SPC utilities and the Dawn example. Three install attempts
   followed, as logged above.

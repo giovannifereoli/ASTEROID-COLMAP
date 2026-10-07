@@ -44,6 +44,21 @@ _SCALARS = {
 
 
 def parse_time(label: dict) -> dt.datetime:
+    """Image start time (UTC) from a parsed label.
+
+    Uses ``DAWN:ALT_START_TIME`` (ISO calendar format) when present, otherwise
+    ``START_TIME`` (day-of-year format ``YYYY-DDDTHH:MM:SS.fff``).
+
+    Parameters
+    ----------
+    label : dict
+        Output of :func:`~asteroid_colmap.pds.parse_label`.
+
+    Returns
+    -------
+    datetime.datetime
+        Naive UTC epoch.
+    """
     alt = label.get("DAWN:ALT_START_TIME")
     if alt:
         return dt.datetime.fromisoformat(str(alt).rstrip("Z"))
@@ -51,6 +66,27 @@ def parse_time(label: dict) -> dt.datetime:
 
 
 def label_record(lbl_path: Path, body: Body) -> dict:
+    """One metadata row from a PDS3 label.
+
+    Parameters
+    ----------
+    lbl_path : pathlib.Path
+        Detached label; the image is expected next to it with the ``.FIT`` suffix.
+    body : Body
+        Target body, used to express the spacecraft position in the body-fixed frame.
+
+    Returns
+    -------
+    dict
+        ``image`` (PNG name), ``fit_path``, ``lbl_path``, ``sequence`` (from the
+        directory name), ``observation_id``, ``filter``, ``utc`` (ISO, ms); the label
+        scalars of :data:`_SCALARS` (``None`` when missing); the camera quaternion
+        ``qw..qz`` (J2000 -> camera); ``sc2tgt_*_km`` and ``sc2sun_*_km`` (J2000);
+        ``sc_bf_*_km`` (spacecraft position, body-fixed); ``rotation_model_check_deg``
+        (angle between the label sub-spacecraft point and ``sc_bf``, only when the label
+        gives the sub-spacecraft point); and ``subsc_lat_model_deg`` /
+        ``subsc_lon_model_deg`` computed from ``sc_bf``.
+    """
     lab = read_label(lbl_path)
     utc = parse_time(lab)
     fit = Path(lbl_path).with_suffix(".FIT")
@@ -84,6 +120,27 @@ def label_record(lbl_path: Path, body: Body) -> dict:
 
 
 def build_metadata(raw_dir: Path, body: Body, out_csv: Path | None = None) -> pd.DataFrame:
+    """Metadata table of every downloaded image, in time order.
+
+    Parameters
+    ----------
+    raw_dir : pathlib.Path
+        Download root; searched recursively for ``*.LBL``.
+    body : Body
+        Target body.
+    out_csv : pathlib.Path, optional
+        If given, the table is also written there.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One :func:`label_record` per label whose ``.FIT`` file exists, sorted by ``utc``.
+
+    Raises
+    ------
+    FileNotFoundError
+        If ``raw_dir`` holds no label.
+    """
     labels = sorted(Path(raw_dir).rglob("*.LBL"))
     if not labels:
         raise FileNotFoundError(f"no .LBL files under {raw_dir}; run the download step first")
@@ -96,6 +153,18 @@ def build_metadata(raw_dir: Path, body: Body, out_csv: Path | None = None) -> pd
 
 
 def load_metadata(path: Path) -> pd.DataFrame:
+    """Read ``metadata.csv`` and add a parsed ``time`` column.
+
+    Parameters
+    ----------
+    path : pathlib.Path
+        File written by :func:`build_metadata`.
+
+    Returns
+    -------
+    pandas.DataFrame
+        The table, with ``time`` as pandas timestamps of ``utc``.
+    """
     df = pd.read_csv(path)
     df["time"] = pd.to_datetime(df["utc"])
     return df
@@ -104,8 +173,19 @@ def load_metadata(path: Path) -> pd.DataFrame:
 def label_geometry(row, body: Body) -> dict[str, np.ndarray]:
     """Body-fixed geometry of one metadata row.
 
-    Returns ``R_cam_from_bf`` (label attitude), ``sc_bf`` (spacecraft position, km) and
-    ``sun_bf`` (unit vector to the Sun), all in the body-fixed frame.
+    Parameters
+    ----------
+    row : pandas.Series or dict
+        Metadata row with ``utc``, ``qw..qz``, ``sc2tgt_*_km`` and ``sc2sun_*_km``.
+    body : Body
+        Target body (rotation model).
+
+    Returns
+    -------
+    dict of numpy.ndarray
+        ``R_cam_from_bf``: ``(3, 3)`` label attitude, body-fixed -> camera.
+        ``sc_bf``: ``(3,)`` spacecraft position (km).
+        ``sun_bf``: ``(3,)`` unit vector from the body centre to the Sun.
     """
     utc = dt.datetime.fromisoformat(str(row["utc"]))
     R_bf = body_from_j2000(body, utc)

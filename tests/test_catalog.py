@@ -2,7 +2,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from asteroid_colmap.catalog import compare_catalogs, equal_area_cells, grade
+from asteroid_colmap.catalog import compare_catalogs, equal_area_cells, grade, one_observation_per_image
+from asteroid_colmap.model_io import SparseModel
 
 
 def test_grade_thresholds():
@@ -59,3 +60,29 @@ def test_compare_catalogs(tmp_path):
     np.testing.assert_allclose(r["distance_km_p50_p90_p99"], np.linalg.norm(offset), atol=1e-9)
     np.testing.assert_allclose(r["distance_minus_offset_km_p50_p90"], 0.0, atol=1e-9)
     assert compare_catalogs(tmp_path / "a", tmp_path / "b", min_shared=6)["num_matched"] == 0
+
+
+def test_one_observation_per_image_keeps_closest_keypoint(camera):
+    """Two nearby keypoints of one image in one track count once: the one nearer the
+    projection stays, and only that point's track length and error are recomputed."""
+    R = np.eye(3)
+    images = pd.DataFrame({"image_id": [1, 2], "R": [R, R], "tx": 0.0, "ty": 0.0, "tz": [5000.0, 6000.0]})
+    points = pd.DataFrame({"point3d_id": [7, 8], "x": [0.0, 10.0], "y": [0.0, -5.0], "z": 0.0,
+                           "error": [9.0, 9.0], "track_length": [3, 2]})
+    uv = {(p, i): camera.project(points.loc[points.point3d_id == p, ["x", "y", "z"]].to_numpy()
+                                 + [0.0, 0.0, 5000.0 + 1000.0 * (i - 1)])[0]
+          for p in (7, 8) for i in (1, 2)}
+    rows = [(7, 1, uv[7, 1] + [2.4, 0.0]),   # farther copy, listed first
+            (8, 1, uv[8, 1]),
+            (7, 1, uv[7, 1] + [0.0, 0.5]),   # nearer copy
+            (7, 2, uv[7, 2] + [0.3, 0.4]),
+            (8, 2, uv[8, 2])]
+    obs = pd.DataFrame([(p, i, k, u, v) for k, (p, i, (u, v)) in enumerate(rows)],
+                       columns=["point3d_id", "image_id", "point2d_idx", "u", "v"])
+    model = SparseModel(pd.DataFrame(), images, points, obs)
+
+    pts, kept = one_observation_per_image(model, camera)
+    assert kept.point2d_idx.tolist() == [1, 2, 3, 4]
+    assert pts.track_length.tolist() == [2, 2]
+    assert pts.error.tolist() == pytest.approx([0.5, 9.0], abs=1e-6)  # (0.5 + 0.5) / 2; 8 untouched
+    assert model.points.track_length.tolist() == [3, 2]  # input not modified

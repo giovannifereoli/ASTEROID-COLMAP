@@ -9,9 +9,13 @@ venv/
 
 # pipeline working directories (FITS downloads, PNGs, COLMAP databases)
 work/
+work_inc/
 data/
 *.db
 *.db-shm
 *.db-wal
 *.FIT
 *.fit
+
+# notebooks
+.ipynb_checkpoints/

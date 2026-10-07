@@ -24,6 +24,7 @@ dependencies = [
 [project.optional-dependencies]
 interactive = ["plotly>=5.0"]
 dev = ["pytest>=7.0"]
+notebook = ["jupyterlab", "ipykernel", "nbclient", "pytest>=7.0"]
 
 [project.scripts]
 asteroid-colmap = "asteroid_colmap.cli:main"
