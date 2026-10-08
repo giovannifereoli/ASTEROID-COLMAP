@@ -6,6 +6,9 @@ import argparse
 import dataclasses
 import logging
 import sys
+from pathlib import Path
+
+import numpy as np
 
 from . import __version__
 from .camera import get_camera
@@ -155,6 +158,166 @@ def cmd_compare(args, ws: Workspace):
     print(json.dumps(result, indent=2))
 
 
+def cmd_templates(args, ws: Workspace):
+    """Build the NCC maplets of the curated landmarks and save ``catalog/templates.npz``.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Parsed options (``size``, ``views``, ``maplet_spacing``).
+    ws : Workspace
+        Working directory with a catalog.
+    """
+    from .metadata import load_metadata
+    from .ncc import build_templates
+
+    ds = get_dataset(args.dataset)
+    t = build_templates(ws.catalog, load_metadata(ws.metadata_csv), ds.body, get_camera(ds.camera),
+                        size=args.size, views=args.views, spacing_km=args.maplet_spacing)
+    t.save(ws.templates)
+    log.info("%d maplets (%d x %d samples at %.3f km, median %.0f views) in %s", len(t), t.size,
+             t.size, t.spacing_km, float(np.median(t.num_views)), ws.templates)
+
+
+def _new_images(args, ws: Workspace, run, body):
+    """Metadata of the images a ``match`` run measures (see :func:`cmd_match`)."""
+    import pandas as pd
+
+    from .download import download, select_evenly
+    from .metadata import build_metadata, load_metadata
+
+    if args.catalog_images:
+        meta = load_metadata(ws.metadata_csv).drop(columns="time")
+    elif args.images:
+        meta = pd.concat([build_metadata(Path(p), body) for p in args.images], ignore_index=True)
+        meta = meta.drop_duplicates("image").sort_values("utc", ignore_index=True)
+    else:
+        src = get_dataset(args.source)
+        if src.body.name != body.name:
+            raise RuntimeError(f"{src.key} images {src.body.name}, the catalog is of {body.name}")
+        download(src, run / "raw", filters=tuple(args.filters), subdirs=args.subdirs,
+                 max_images=args.max_images, workers=args.workers)
+        meta = build_metadata(run / "raw", body)
+    keep = select_evenly(list(range(len(meta))), args.max_images)
+    return meta.iloc[keep].reset_index(drop=True)
+
+
+def cmd_match(args, ws: Workspace):
+    """Find the catalog landmarks in new images by NCC and correct the image poses.
+
+    The images are the label/FITS pairs under ``--images`` (any download folders), the
+    catalog's own images with ``--catalog-images`` (a self-consistency check: each image is
+    matched without its own reference views), or else they are downloaded from ``--source``
+    into ``navigation/<name>/raw``. Writes ``metadata.csv``, ``matches.csv``, ``poses.csv``,
+    ``summary.json`` and navigation figures 01-04 to ``navigation/<name>/``.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Parsed options (image source, ``name`` and :class:`~asteroid_colmap.ncc.MatchOptions`
+        overrides).
+    ws : Workspace
+        Working directory with ``catalog/templates.npz``.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import pandas as pd
+
+    from .ncc import MatchOptions, Templates, match_images, summarize_matches
+    from .plots import make_navigation_plots
+
+    ds = get_dataset(args.dataset)
+    cam = get_camera(ds.camera)
+    if not ws.templates.exists():
+        raise FileNotFoundError(f"{ws.templates} not found - run 'asteroid-colmap templates' first")
+    t = Templates.load(ws.templates)
+    name = args.name or ("catalog" if args.catalog_images else
+                         "local" if args.images else args.source)
+    run = ws.navigation / name
+    run.mkdir(parents=True, exist_ok=True)
+    meta = _new_images(args, ws, run, ds.body)
+    meta.to_csv(run / "metadata.csv", index=False)
+    names = {f.name for f in dataclasses.fields(MatchOptions)}
+    opt = MatchOptions(**{k: v for k, v in vars(args).items() if k in names and v is not None})
+    cams = pd.read_csv(ws.catalog / "cameras.csv")
+    matches, poses = match_images(meta, t, ds.body, cam, opt, catalog_cameras=cams)
+    if not len(poses):
+        raise RuntimeError("no image could be matched")
+    matches.to_csv(run / "matches.csv", index=False)
+    poses.to_csv(run / "poses.csv", index=False)
+    summary = {"name": name, "images": int(len(meta)), "matching": summarize_matches(matches, poses, t, opt)}
+    ws.write_json(run / "summary.json", summary)
+    m = summary["matching"]
+    log.info("%d/%d images with a pose; median %d inliers, RMS %.2f -> %.2f px", m["num_images_with_pose"],
+             m["num_images"], m["median_inliers_per_image"], m["median_prefit_rms_px"],
+             m["median_postfit_rms_px"])
+    for p in make_navigation_plots(run / "plots", meta, matches, poses, t, cam, target=ds.body.name):
+        print(p)
+
+
+def _run_dir(ws: Workspace, name: str | None) -> Path:
+    """Folder of a ``match`` run; without ``name`` the only run there is."""
+    if name:
+        run = ws.navigation / name
+    else:
+        runs = sorted(p for p in ws.navigation.glob("*") if (p / "matches.csv").exists())
+        if len(runs) != 1:
+            raise FileNotFoundError(f"pass --name, one of: {[p.name for p in runs]}" if runs else
+                                    f"no matching run in {ws.navigation} - run 'asteroid-colmap match'")
+        run = runs[0]
+    if not (run / "matches.csv").exists():
+        raise FileNotFoundError(f"{run / 'matches.csv'} not found - run 'asteroid-colmap match' first")
+    return run
+
+
+def cmd_pose(args, ws: Workspace):
+    """Estimate each image's pose relative to the body from its NCC landmark matches.
+
+    Solves position and attitude without the label pose (:mod:`~asteroid_colmap.pose`), fits a
+    smooth arc per sequence, compares both with the label and, for catalog images, with the
+    COLMAP pose. Writes ``relative_pose.csv``, ``trajectory.csv``, a ``relative_pose`` section
+    of ``summary.json`` and navigation figure 05 to the run folder.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Parsed options (``name``, ``degree`` and :class:`~asteroid_colmap.pose.PoseOptions`
+        overrides).
+    ws : Workspace
+        Working directory with a ``match`` run.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import pandas as pd
+
+    from .metadata import load_metadata
+    from .plots import plot_relative_pose
+    from .pose import PoseOptions, fit_trajectory, relative_poses, summarize_relative
+
+    ds = get_dataset(args.dataset)
+    run = _run_dir(ws, args.name)
+    names = {f.name for f in dataclasses.fields(PoseOptions)}
+    opt = PoseOptions(**{k: v for k, v in vars(args).items() if k in names and v is not None})
+    cams = ws.catalog / "cameras.csv"
+    rel = relative_poses(pd.read_csv(run / "matches.csv"), load_metadata(run / "metadata.csv"),
+                         ds.body, get_camera(ds.camera), opt,
+                         ncc_poses=pd.read_csv(run / "poses.csv"),
+                         catalog_cameras=pd.read_csv(cams) if cams.exists() else None)
+    traj = fit_trajectory(rel, ds.body, degree=args.degree)
+    rel.to_csv(run / "relative_pose.csv", index=False)
+    traj.to_csv(run / "trajectory.csv", index=False)
+    summary = ws.read_json(run / "summary.json") if (run / "summary.json").exists() else {}
+    summary["relative_pose"] = s = summarize_relative(rel, traj, opt)
+    ws.write_json(run / "summary.json", summary)
+    log.info("%d/%d images solved; median RMS %.2f px, formal 1-sigma %.2f km along the range",
+             s["num_images_with_pose"], s["num_images"], s["median_rms_px"],
+             s.get("median_sigma_range_km", float("nan")))
+    if s["num_images_with_pose"]:
+        print(plot_relative_pose(run / "plots", rel, traj if len(traj) else None, ds.body.name))
+
+
 def cmd_run(args, ws: Workspace):
     """Run download (unless ``--skip-download``), prepare, reconstruct, catalog and plot.
 
@@ -205,6 +368,15 @@ def _print_summary(s: dict):
           f"reproj {s['median_reproj_error_px']:.2f} px)")
     print(f"alignment         : position RMS {a['position_rms_km']:.3f} km, attitude median "
           f"{a['attitude_median_deg']:.4f} deg, scale {a['scale_km_per_unit']:.4g} km/unit")
+    if "position_range_rms_km" in a:
+        print(f"                    position RMS {a['position_range_rms_km']:.3f} km along the line "
+              f"of sight, {a['position_lateral_rms_km']:.3f} km sideways; boresight median "
+              f"{a['boresight_median_px']:.1f} px")
+    if "label_pointing_offset_by_sequence_px" in s:
+        by_seq = ", ".join(f"{k} ({u:+.1f}, {v:+.1f})"
+                           for k, (u, v) in s["label_pointing_offset_by_sequence_px"].items())
+        print(f"label poses       : landmarks {s['label_pointing_offset_median_px']:.2f} px (median) "
+              f"from where they are seen; median (u, v) px {by_seq}")
 
 
 def _add_common(p):
@@ -266,6 +438,43 @@ def _add_compare(p):
     p.add_argument("--min-shared", type=int, default=3, help="keypoints two landmarks must share")
 
 
+def _add_templates(p):
+    """Add the options of the ``templates`` step."""
+    p.add_argument("--size", type=int, default=31, help="maplet width in samples (odd)")
+    p.add_argument("--views", type=int, default=4, help="reference views per landmark")
+    p.add_argument("--maplet-spacing", type=float,
+                   help="maplet sample spacing, km (default: median landmark GSD)")
+
+
+def _add_match(p):
+    """Add the options of the ``match`` step (matching defaults live in ``MatchOptions``)."""
+    p.add_argument("--name", help="run folder under <workdir>/navigation "
+                                  "(default: the source dataset, 'local' or 'catalog')")
+    src = p.add_mutually_exclusive_group()
+    src.add_argument("--source", default="vesta-opnav", choices=sorted(DATASETS),
+                     help="dataset to download the new images from")
+    src.add_argument("--images", nargs="+", metavar="DIR",
+                     help="folders with downloaded FIT + LBL pairs (no download)")
+    src.add_argument("--catalog-images", action="store_true",
+                     help="the catalog's own images, each without its own reference views")
+    _add_download(p)
+    p.add_argument("--estimate-position", action="store_true", default=None,
+                   help="also fit a position correction (weak from far away)")
+    p.add_argument("--min-ncc", type=float, help="peak correlation to accept a match (0.8)")
+    p.add_argument("--search", dest="search_px", type=int, help="search half-width, px (6)")
+    p.add_argument("--coarse-search", dest="coarse_search_px", type=int,
+                   help="pass-1 search half-width, px (20)")
+
+
+def _add_pose(p):
+    """Add the options of the ``pose`` step (defaults live in ``PoseOptions``)."""
+    p.add_argument("--name", help="run folder under <workdir>/navigation (default: the only one)")
+    p.add_argument("--degree", type=int, default=2, help="polynomial degree of the smoothed arc")
+    p.add_argument("--sigma", dest="sigma_px", type=float, help="measurement noise, px (0.3)")
+    p.add_argument("--ransac-threshold", dest="ransac_threshold_px", type=float,
+                   help="RANSAC inlier threshold, px (2)")
+
+
 def _add_plot(p):
     """Add the options of the ``plot`` step."""
     p.add_argument("--no-html", action="store_true", help="skip the interactive Plotly page")
@@ -295,6 +504,11 @@ def build_parser() -> argparse.ArgumentParser:
          [_add_download, _add_prepare, _add_reconstruct, _add_catalog, _add_plot]),
         ("compare", "compare two catalogs landmark by landmark (e.g. both mapping modes)",
          cmd_compare, [_add_compare]),
+        ("templates", "NCC maplets of the curated landmarks", cmd_templates, [_add_templates]),
+        ("match", "find the landmarks in new images by NCC and correct their poses", cmd_match,
+         [_add_match]),
+        ("pose", "relative position and attitude from the matches, smoothed arc", cmd_pose,
+         [_add_pose]),
         ("info", "datasets, camera model and the latest summary", cmd_info, []),
     ]
     for name, help_, func, adders in steps:

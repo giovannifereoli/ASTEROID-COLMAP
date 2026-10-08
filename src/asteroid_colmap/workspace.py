@@ -47,6 +47,11 @@ class Workspace:
         ``catalog/``: landmark catalog tables, point cloud and ``summary.json``.
     plots : pathlib.Path
         ``plots/``: figures.
+    templates : pathlib.Path
+        ``catalog/templates.npz``: landmark maplets for NCC matching
+        (:class:`~asteroid_colmap.ncc.Templates`).
+    navigation : pathlib.Path
+        ``navigation/``: NCC matching runs on new images, one sub-directory per run.
     """
     root: Path
 
@@ -68,6 +73,8 @@ class Workspace:
     logs = property(lambda self: self.root / "colmap" / "logs")
     catalog = property(lambda self: self.root / "catalog")
     plots = property(lambda self: self.root / "plots")
+    templates = property(lambda self: self.root / "catalog" / "templates.npz")  # NCC maplets
+    navigation = property(lambda self: self.root / "navigation")  # NCC matching runs
 
     def write_json(self, path: Path, data: dict[str, Any]) -> None:
         """Write a dictionary as indented JSON, creating parent directories.

@@ -241,6 +241,26 @@ def ellipsoid_radius(lat_deg, lon_deg, radii) -> np.ndarray:
     return 1.0 / np.sqrt((u[..., 0] / a) ** 2 + (u[..., 1] / b) ** 2 + (u[..., 2] / c) ** 2)
 
 
+def local_axes(C: np.ndarray) -> np.ndarray:
+    """Radial, east and north unit vectors at the sub-point of ``C`` (rows of a 3x3 matrix).
+
+    Parameters
+    ----------
+    C : numpy.ndarray
+        ``(3,)`` body-fixed position, not on the pole axis.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``(3, 3)``; ``axes @ d`` splits a position difference ``d`` into its range, east and
+        north components.
+    """
+    up = C / np.linalg.norm(C)
+    east = np.cross([0.0, 0.0, 1.0], up)
+    east /= np.linalg.norm(east)
+    return np.vstack([up, east, np.cross(up, east)])
+
+
 def rotation_angle_deg(Ra: np.ndarray, Rb: np.ndarray) -> float:
     """Angle of the relative rotation ``Ra^T Rb``, i.e. the difference of two attitudes.
 

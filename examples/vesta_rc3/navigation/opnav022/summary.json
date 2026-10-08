@@ -1,0 +1,82 @@
+{
+  "name": "opnav022",
+  "images": 15,
+  "matching": {
+    "num_images": 15,
+    "num_images_with_pose": 15,
+    "num_templates": 6823,
+    "maplet_size": 31,
+    "maplet_spacing_km": 0.492,
+    "num_searched": 19691,
+    "num_accepted": 15715,
+    "num_inliers": 14858,
+    "median_inliers_per_image": 994.0,
+    "median_ncc": 0.9759597869619745,
+    "median_residual_px": 0.20130421774978707,
+    "median_prefit_rms_px": 5.2147584618816545,
+    "median_postfit_rms_px": 0.334334892918828,
+    "median_correction_px": 5.193486798317492,
+    "median_correction_arcsec": 103.38892853516037,
+    "options": {
+      "max_emission_deg": 70.0,
+      "max_incidence_deg": 85.0,
+      "max_sun_angle_deg": 30.0,
+      "template_px": 25,
+      "min_template_px": 11,
+      "min_valid_fraction": 0.6,
+      "coarse_search_px": 20,
+      "coarse_landmarks": 160,
+      "search_px": 6,
+      "refine_search_px": 3,
+      "min_ncc": 0.8,
+      "min_margin": 0.1,
+      "sigma_px": 0.3,
+      "estimate_position": false,
+      "position_sigma_km": 10.0,
+      "min_matches": 10,
+      "occlusion_margin_km": 25.0,
+      "batch": 400
+    }
+  },
+  "relative_pose": {
+    "num_images": 15,
+    "num_images_with_pose": 15,
+    "median_inliers": 998.0,
+    "median_rms_px": 0.32562350560680225,
+    "median_range_km": 4028.0186801010764,
+    "median_sigma_range_km": 0.09846216225962973,
+    "median_sigma_east_km": 0.3687147715613777,
+    "median_sigma_north_km": 0.35871781677738224,
+    "median_sigma_target_px": 0.08295475634154374,
+    "rms_range_minus_label_km": 0.6654722015002346,
+    "rms_east_minus_label_km": 1.323128797315551,
+    "rms_north_minus_label_km": 1.929482063359866,
+    "mean_range_minus_label_km": 0.676613019719992,
+    "median_attitude_minus_label_arcsec": 218.5189800160654,
+    "median_label_rms_px": 5.214714024836889,
+    "median_attitude_minus_ncc_arcsec": 130.658320723207,
+    "trajectory": {
+      "degree": 2,
+      "chi2_dof": {
+        "OPNAV_022": 1.061379152672315
+      },
+      "scatter_range_km": 0.06348227933571336,
+      "scatter_east_km": 0.45821845504764436,
+      "scatter_north_km": 0.2456478410267869,
+      "rms_range_minus_label_km": 0.667006236485331,
+      "rms_east_minus_label_km": 1.2363196686960776,
+      "rms_north_minus_label_km": 1.9057319766931315
+    },
+    "options": {
+      "sigma_px": 0.3,
+      "ransac_threshold_px": 2.0,
+      "ransac_sample": 12,
+      "ransac_iterations": 500,
+      "k_sigma": 3.0,
+      "floor_px": 1.0,
+      "min_points": 12,
+      "rounds": 3,
+      "seed": 0
+    }
+  }
+}

@@ -101,6 +101,16 @@ DATASETS: dict[str, Dataset] = {
         subdirs=("2011205_RC3", "2011205_RC3B"),
         body=VESTA,
     ),
+    "vesta-opnav": Dataset(
+        key="vesta-opnav",
+        description=(
+            "Dawn FC2 calibrated images, Vesta approach, optical-navigation sequence OPNAV_022, "
+            "2011-07-31, ~4000 km range, ~0.35 km/px (new images for NCC matching)"
+        ),
+        base_url=_VESTA_FC2_1B + "2011123_APPROACH/",
+        subdirs=("2011212_OPNAV_022",),
+        body=VESTA,
+    ),
 }
 
 

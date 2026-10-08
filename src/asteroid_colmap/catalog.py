@@ -338,7 +338,9 @@ def _cameras(meta, per_image, observations) -> pd.DataFrame:
     ``exposure_ms``, ``range_km``, ``pixel_scale_km``, ``subsc_lat_deg``,
     ``subsc_lon_deg`` (from the rotation model), ``phase_deg``,
     ``rotation_model_check_deg``; ``num_landmarks`` (0 if unregistered),
-    ``reproj_rms_px`` and the median label offsets ``label_offset_u/v_px``; then the
+    ``reproj_rms_px``; the median label offsets ``label_offset_u/v_px`` (projection with
+    the label pose minus measurement) and their length ``label_offset_px``, i.e. how far
+    the label pose places the catalog landmarks from where they are seen; then the
     :func:`~asteroid_colmap.georef.georeference` per-image columns.
     """
     keep = ["image", "sequence", "utc", "observation_id", "exposure_ms", "range_km",
@@ -352,6 +354,7 @@ def _cameras(meta, per_image, observations) -> pd.DataFrame:
         label_offset_u_px=("label_pred_du_px", "median"),
         label_offset_v_px=("label_pred_dv_px", "median"),
     )
+    stats["label_offset_px"] = np.hypot(stats.label_offset_u_px, stats.label_offset_v_px)
     cams = cams.merge(stats, left_on="image", right_index=True, how="left")
     cols = [c for c in per_image.columns if c not in ("sequence", "utc", "range_km")]
     cams = cams.merge(per_image[cols], on="image", how="left")
@@ -412,7 +415,9 @@ def summarize(cat: dict[str, pd.DataFrame], align: dict, sim: Similarity, recon:
         ``num_outliers``, ``grades``, ``num_observations``; medians over non-outliers
         ``median_track_length``, ``median_reproj_error_px``, ``median_tri_angle_deg``;
         ``height_km_p05_p50_p95``, ``lat_range_deg``,
-        ``label_pointing_offset_median_px``, ``alignment``, ``similarity``,
+        ``label_pointing_offset_median_px`` (median ``label_offset_px``),
+        ``label_pointing_offset_by_sequence_px`` (median ``[u, v]`` label offset of each
+        sequence), ``alignment``, ``similarity``,
         ``image_flip``, ``colmap`` and ``selected_model``.
     """
     lm, cams, obs = cat["landmarks"], cat["cameras"], cat["observations"]
@@ -432,8 +437,11 @@ def summarize(cat: dict[str, pd.DataFrame], align: dict, sim: Similarity, recon:
         "median_tri_angle_deg": float(good.max_tri_angle_deg.median()),
         "height_km_p05_p50_p95": good.height_km.quantile([0.05, 0.5, 0.95]).round(3).tolist(),
         "lat_range_deg": [float(good.lat_deg.min()), float(good.lat_deg.max())],
-        "label_pointing_offset_median_px": float(np.hypot(cams.label_offset_u_px,
-                                                          cams.label_offset_v_px).median()),
+        "label_pointing_offset_median_px": float(cams.label_offset_px.median()),
+        "label_pointing_offset_by_sequence_px": {
+            seq: [round(float(g.label_offset_u_px.median()), 3),
+                  round(float(g.label_offset_v_px.median()), 3)]
+            for seq, g in cams[cams.registered].groupby("sequence")},
         "alignment": align,
         "similarity": sim.as_dict(),
         "image_flip": prep.get("flip"),

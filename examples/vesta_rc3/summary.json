@@ -28,11 +28,23 @@
     55.943525142862626
   ],
   "label_pointing_offset_median_px": 2.3655743704852137,
+  "label_pointing_offset_by_sequence_px": {
+    "RC3": [
+      -1.96,
+      -0.961
+    ],
+    "RC3B": [
+      0.703,
+      -2.483
+    ]
+  },
   "alignment": {
     "num_aligned_images": 130,
     "num_used_in_fit": 130,
     "scale_km_per_unit": 1.0002790372026449,
     "position_rms_km": 2.1498216253808278,
+    "position_range_rms_km": 1.113886641828799,
+    "position_lateral_rms_km": 1.838746738980229,
     "position_max_km": 3.82473209829786,
     "attitude_median_deg": 0.022515378371667567,
     "attitude_max_deg": 0.05425939326755591,
