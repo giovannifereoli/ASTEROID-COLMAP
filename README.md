@@ -220,8 +220,14 @@ Each row of `observations.csv` holds:
 ## Figures
 
 All figures share one house style, applied inside each plot call, so importing the package does not
-change your matplotlib settings. Height above the ellipsoid always uses the same diverging
-blue-white-red scale, centred on 0 km.
+change your matplotlib settings. It follows the usual advice for journal figures
+([Rougier et al. 2014](https://doi.org/10.1371/journal.pcbi.1003833)): text in Latin Modern Roman,
+the LaTeX face, when a TeX installation provides it (STIX otherwise); a thin frame with inward ticks
+on all four sides and no background grid; and colours that stay distinct under the common
+colour-vision deficiencies. Categories use the [Okabe–Ito](https://jfly.uni-koeln.de/color/)
+colours, magnitudes use viridis, and height above the ellipsoid always uses Paul Tol's diverging
+[sunset](https://sronpersonalpages.nl/~pault/) scale (blue, pale yellow, red), centred on 0 km. PNGs
+are written at 200 dpi.
 
 | figure | content |
 |---|---|
@@ -400,8 +406,8 @@ jupyter lab notebooks/test_everything.ipynb
 jupyter execute --inplace notebooks/test_everything.ipynb
 ```
 
-The committed copy was run on the full RC3 workspace with both navigation runs, where all 103 checks
-pass. With only the committed examples, 80 checks run and pass.
+The committed copy was run on the full RC3 workspace with both navigation runs, where all 104 checks
+pass. With only the committed examples, 81 checks run and pass.
 
 ## Validation: two independent mapping modes
 

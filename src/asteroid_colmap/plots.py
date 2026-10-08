@@ -19,22 +19,33 @@ Written by :func:`make_navigation_plots` for an NCC matching run on new images
 image chips, 03 pointing error and fit residuals, 04 correction, residuals and counts per
 image, 05 relative pose (:mod:`~asteroid_colmap.pose`). These functions take the run's tables
 and an output directory, not a workspace.
+
+Style
+-----
+The house style follows common advice for journal figures (Rougier, Droettboom & Bourne
+2014, "Ten simple rules for better figures"): a serif face that matches LaTeX text (Latin
+Modern when a TeX installation provides it, else STIX), a thin full frame with inward ticks
+on all four sides, no background grid, and frameless legends. Colours are chosen for their
+job and are safe for the common colour-vision deficiencies: the Okabe-Ito palette for
+categories, viridis for magnitudes and Paul Tol's "sunset" scheme for signed heights.
 """
 
 from __future__ import annotations
 
 import functools
+import glob
 import logging
 from pathlib import Path
 
+import matplotlib
 import matplotlib.patheffects as pe
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from matplotlib.colors import LinearSegmentedColormap, LogNorm, TwoSlopeNorm
+from matplotlib.colors import LinearSegmentedColormap, LogNorm, TwoSlopeNorm, to_hex
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
-from matplotlib.ticker import FixedLocator, NullLocator, StrMethodFormatter
+from matplotlib.ticker import FixedLocator, MultipleLocator, NullLocator, StrMethodFormatter
 from PIL import Image
 
 from .camera import get_camera
@@ -46,38 +57,91 @@ from .workspace import Workspace
 
 log = logging.getLogger(__name__)
 
-# palette (validated: scripts/validate_palette.js, light mode, all pairs for the first three)
-SURFACE, INK, INK2, MUTED, GRID, AXIS = "#fcfcfb", "#0b0b0b", "#52514e", "#898781", "#e1e0d9", "#c3c2b7"
-CATEGORICAL = ["#2a78d6", "#eb6834", "#1baf7a"]
-SEQUENTIAL_STOPS = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95", "#0d366b"]
-DIVERGING_STOPS = ["#0d366b", "#1c5cab", "#3987e5", "#9ec5f4", "#f0efec",
-                   "#f2a3a2", "#e34948", "#b83232", "#7a1f1f"]
-SEQUENTIAL = LinearSegmentedColormap.from_list("seq_blue", SEQUENTIAL_STOPS)
-# the same ramp without its lightest step, for small marks drawn on the light surface
-SEQUENTIAL_MARKS = LinearSegmentedColormap.from_list("seq_blue_marks", SEQUENTIAL_STOPS[1:])
-DIVERGING = LinearSegmentedColormap.from_list("div_blue_red", DIVERGING_STOPS)
-# grades are ordered (A best), so they take steps of the sequential ramp, darkest = best
-GRADE_COLORS = {"A": "#0d366b", "B": "#3987e5", "C": "#9ec5f4"}
-DPI = 150
+# Palette (validated: the dataviz scripts/validate_palette.js, light mode, all pairs).
+# Categories: Okabe & Ito, as in Wong (2011, Nature Methods 8, 441) - blue, vermillion,
+# bluish green. Magnitudes: viridis, perceptually uniform with monotonic lightness. Signed
+# heights: Paul Tol's sunset, a diverging scheme with a pale neutral midpoint.
+SURFACE, INK, INK2, MUTED, GRID, AXIS = "#ffffff", "#1a1a1a", "#4d4d4d", "#8c8c8c", "#e8e8e8", "#9a9a9a"
+CATEGORICAL = ["#0072B2", "#D55E00", "#009E73"]
+SEQUENTIAL = matplotlib.colormaps["viridis"]
+SEQUENTIAL_STOPS = [to_hex(c) for c in SEQUENTIAL(np.linspace(0.0, 1.0, 7))]
+# viridis without its palest yellow, for small marks drawn on the white surface
+SEQUENTIAL_MARKS = LinearSegmentedColormap.from_list("viridis_marks",
+                                                     SEQUENTIAL(np.linspace(0.0, 0.88, 256)))
+DIVERGING_STOPS = ["#364B9A", "#4A7BB7", "#6EA6CD", "#98CAE1", "#C2E4EF", "#EAECCC",
+                   "#FEDA8B", "#FDB366", "#F67E4B", "#DD3D2D", "#A50026"]
+DIVERGING = LinearSegmentedColormap.from_list("tol_sunset", DIVERGING_STOPS)
+# grades are ordered (A best), so they take steps of the sequential map, darkest = best
+GRADE_COLORS = {"A": "#414487", "B": "#21918c", "C": "#7ad151"}
+DPI = 200
 
 STYLE = {
     "figure.facecolor": SURFACE, "axes.facecolor": SURFACE, "savefig.facecolor": SURFACE,
-    "axes.edgecolor": AXIS, "axes.labelcolor": INK2, "axes.titlecolor": INK,
-    "axes.titlesize": 11, "axes.titleweight": "bold", "axes.titlelocation": "left",
-    "axes.labelsize": 9.5, "axes.grid": True, "axes.axisbelow": True,
-    "axes.spines.top": False, "axes.spines.right": False,
-    "grid.color": GRID, "grid.linewidth": 0.7, "grid.linestyle": "-",
-    "xtick.color": AXIS, "ytick.color": AXIS, "xtick.labelcolor": INK2,
-    "ytick.labelcolor": INK2, "xtick.labelsize": 8.5, "ytick.labelsize": 8.5,
-    "text.color": INK, "legend.frameon": False, "legend.fontsize": 9,
-    "lines.linewidth": 1.5, "font.family": "sans-serif",
-    "figure.titlesize": 13, "figure.titleweight": "bold",
+    "axes.edgecolor": INK, "axes.linewidth": 0.8, "axes.labelcolor": INK,
+    "axes.titlecolor": INK, "axes.titlesize": 11, "axes.titleweight": "normal",
+    "axes.titlelocation": "left", "axes.titlepad": 5, "axes.labelsize": 10,
+    "axes.grid": False, "axes.axisbelow": True, "axes.formatter.use_mathtext": True,
+    "grid.color": GRID, "grid.linewidth": 0.5, "grid.linestyle": "-",
+    "xtick.direction": "in", "ytick.direction": "in", "xtick.top": True, "ytick.right": True,
+    "xtick.minor.visible": True, "ytick.minor.visible": True,
+    "xtick.major.size": 3.5, "ytick.major.size": 3.5, "xtick.minor.size": 2.0,
+    "ytick.minor.size": 2.0, "xtick.major.width": 0.7, "ytick.major.width": 0.7,
+    "xtick.minor.width": 0.5, "ytick.minor.width": 0.5, "xtick.major.pad": 4,
+    "ytick.major.pad": 4, "xtick.color": INK, "ytick.color": INK,
+    "xtick.labelsize": 9, "ytick.labelsize": 9, "text.color": INK,
+    "legend.frameon": False, "legend.fontsize": 9, "legend.handlelength": 1.8,
+    "lines.linewidth": 1.1, "lines.markersize": 4, "errorbar.capsize": 0,
+    "figure.titlesize": 14, "figure.titleweight": "bold",
 }
-"""matplotlib rcParams of the house style, applied by :func:`_styled`."""
+"""matplotlib rcParams of the house style, applied with :func:`_font_rc` by :func:`_styled`."""
+
+# where TeX distributions keep the Latin Modern OpenType fonts
+_LM_DIRS = ("/usr/local/texlive/*/texmf-dist/fonts/opentype/public/lm",
+            "/Library/TeX/Root/texmf-dist/fonts/opentype/public/lm",
+            "/usr/share/texlive/texmf-dist/fonts/opentype/public/lm",
+            "/usr/share/texmf/fonts/opentype/public/lm",
+            "/opt/homebrew/share/texmf-dist/fonts/opentype/public/lm")
+
+
+@functools.lru_cache(maxsize=None)
+def _font_rc() -> dict:
+    """Font rcParams: Latin Modern Roman (LaTeX's default face) when available, else STIX.
+
+    Latin Modern is taken from the installed fonts or, failing that, from a TeX
+    distribution, whose OpenType files are then registered with matplotlib's font manager
+    (this extends the font list but changes no rcParams). Glyphs that Latin Modern lacks,
+    such as Greek letters, ≥ and primes, fall back to STIX General and then DejaVu Serif
+    (STIX italic lacks a few symbols), both shipped with matplotlib, and maths is set in
+    Computer Modern to match. Without Latin Modern all text is STIX, a Times-like face.
+
+    Returns
+    -------
+    dict
+        ``font.family`` and ``mathtext.fontset`` rcParams.
+    """
+    from matplotlib import font_manager
+
+    def known():
+        """Latin Modern Roman is in the font manager's list."""
+        return any(f.name == "Latin Modern Roman" for f in font_manager.fontManager.ttflist)
+
+    if not known():
+        for d in sorted({p for pattern in _LM_DIRS for p in glob.glob(pattern)}, reverse=True):
+            for path in sorted(glob.glob(f"{d}/lmroman10-*.otf")):
+                try:
+                    font_manager.fontManager.addfont(path)
+                except (OSError, RuntimeError):  # unreadable or not a font file
+                    continue
+            if known():
+                break
+    if known():
+        return {"font.family": ["Latin Modern Roman", "STIXGeneral", "DejaVu Serif"],
+                "mathtext.fontset": "cm"}
+    return {"font.family": ["STIXGeneral", "DejaVu Serif"], "mathtext.fontset": "stix"}
 
 
 def _styled(func):
-    """Run a plotting function inside ``plt.rc_context(STYLE)``.
+    """Run a plotting function inside ``plt.rc_context`` with :data:`STYLE` and the fonts.
 
     Parameters
     ----------
@@ -92,7 +156,7 @@ def _styled(func):
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         """Call ``func`` with the house style active."""
-        with plt.rc_context(STYLE):
+        with plt.rc_context({**STYLE, **_font_rc()}):
             return func(*args, **kwargs)
     return wrapper
 
@@ -133,7 +197,7 @@ def _legend_handles(colors: dict[str, str], marker="o", labels: dict[str, str] |
     """
     labels = labels or {}
     return [Line2D([], [], color=c, marker=marker, linestyle="-" if marker is None else "",
-                   markersize=7, linewidth=1.5, label=labels.get(s, s)) for s, c in colors.items()]
+                   markersize=5, linewidth=1.2, label=labels.get(s, s)) for s, c in colors.items()]
 
 
 def _time_col(df: pd.DataFrame) -> str:
@@ -237,10 +301,10 @@ def _suptitle(fig, title: str, subtitle: str | None = None):
     The title sits just above the figure area (``bbox_inches="tight"`` keeps it), and the
     subtitle hangs just below the top edge, so callers leave about 0.4 inch free there.
     """
-    fig.text(0.01, 1.0, title, ha="left", va="bottom", fontsize=13, weight="bold", color=INK,
+    fig.text(0.01, 1.0, title, ha="left", va="bottom", fontsize=14, weight="bold", color=INK,
              transform=fig.transFigure)
     if subtitle:
-        fig.text(0.01, 0.985, subtitle, ha="left", va="top", fontsize=9.5, color=INK2,
+        fig.text(0.01, 0.985, subtitle, ha="left", va="top", fontsize=10, color=INK2,
                  transform=fig.transFigure)
 
 
@@ -266,11 +330,48 @@ def _log_ticks(cb, vmin: float, vmax: float):
 
 
 def _colorbar(fig, mappable, label: str, **kw):
-    """Add a colorbar with the house outline colour and a label; ``kw`` go to ``fig.colorbar``."""
+    """Add a framed colorbar with inward ticks and a label; ``kw`` go to ``fig.colorbar``."""
     cb = fig.colorbar(mappable, **kw)
     cb.set_label(label)
-    cb.outline.set_edgecolor(AXIS)
+    cb.outline.set_edgecolor(INK)
+    cb.outline.set_linewidth(0.8)
+    cb.ax.tick_params(which="both", direction="in")
     return cb
+
+
+def _signed(x: float, fmt: str = "+.0f") -> str:
+    """Format a signed number with a typographic minus sign (U+2212) instead of a hyphen."""
+    return format(x, fmt).replace("-", "\u2212")
+
+
+def _no_ticks(ax):
+    """Remove all ticks and tick labels from an image panel but keep its thin frame."""
+    ax.tick_params(which="both", left=False, right=False, top=False, bottom=False,
+                   labelleft=False, labelbottom=False)
+    ax.grid(False)
+
+
+def _no_minor(ax, axis: str = "both"):
+    """Turn off the minor ticks of a categorical axis (``"x"``, ``"y"`` or ``"both"``)."""
+    for name in ("x", "y") if axis == "both" else (axis,):
+        getattr(ax, f"{name}axis").set_minor_locator(NullLocator())
+
+
+def _night_band(ax, night: tuple[float, float], x: float = 4.0):
+    """Hatch the polar-night latitude band of a map panel and label it at longitude ``x``."""
+    ax.axhspan(*night, facecolor="none", edgecolor="#bdbdbd", hatch="////", lw=0, zorder=0)
+    hemi = "north" if night[1] == 90 else "south"
+    edge = night[0] if hemi == "north" else night[1]
+    ax.text(x, np.mean(night), f"polar night ({hemi} of {abs(edge):.0f}°"
+            f"{'N' if hemi == 'north' else 'S'})", va="center", fontsize=9, style="italic",
+            color=INK2, bbox=dict(facecolor=SURFACE, edgecolor="none", pad=1.5))
+
+
+def _degree_grid(ax, minor: float = 10.0):
+    """Minor ticks every ``minor`` degrees and a faint grid on the major ticks of a map panel."""
+    ax.xaxis.set_minor_locator(MultipleLocator(minor))
+    ax.yaxis.set_minor_locator(MultipleLocator(minor))
+    ax.grid(True, which="major", color=GRID, lw=0.5)
 
 
 # ---------------------------------------------------------------- inputs & geometry
@@ -306,8 +407,8 @@ def plot_montage(ws: Workspace, meta: pd.DataFrame, colors, n: int = 24, ncols: 
         r = meta.iloc[i]
         ax.imshow(Image.open(ws.images / r["image"]), cmap="gray", vmin=0, vmax=255)
         ax.add_patch(plt.Rectangle((0, 0.965), 1, 0.035, transform=ax.transAxes, color=colors[r["sequence"]]))
-        ax.set_title(f"{r['sequence']}  {r['time']:%H:%M}\nsub-SC {r['subsc_lat_deg']:+.0f}°, "
-                     f"{r['subsc_lon_model_deg']:.0f}°E", fontsize=7.5, color=INK2, weight="normal",
+        ax.set_title(f"{r['sequence']}  {r['time']:%H:%M}\nsub-SC {_signed(r['subsc_lat_deg'])}°, "
+                     f"{r['subsc_lon_model_deg']:.0f}°E", fontsize=8, color=INK2, weight="normal",
                      loc="center")
     _suptitle(fig, "Input images", f"{len(idx)} of {len(meta)} prepared frames (8-bit stretch, "
               "orientation-corrected); colour bar = sequence")
@@ -356,34 +457,33 @@ def plot_geometry(ws: Workspace, meta: pd.DataFrame, colors) -> Path:
 
     night = _polar_night(meta["subsolar_lat_deg"]) if "subsolar_lat_deg" in meta else None
     if night:
-        ax_t.axhspan(*night, color=GRID, lw=0, zorder=0)
-        hemi = "north" if night[1] == 90 else "south"
-        edge = night[0] if hemi == "north" else night[1]
-        ax_t.text(4, np.mean(night), f"polar night ({hemi} of {abs(edge):.0f}°"
-                  f"{'N' if hemi == 'north' else 'S'})", va="center", fontsize=8.5, color=INK2)
+        _night_band(ax_t, night)
     for seq, grp in m.groupby("sequence", sort=False):
         x, y = _break_wraps(grp["lon"], grp["subsc_lat_deg"])
-        ax_t.plot(x, y, "-", color=colors[seq], lw=1.0)
-        ax_t.plot(grp["lon"], grp["subsc_lat_deg"], "o", color=colors[seq], markersize=3.5)
+        ax_t.plot(x, y, "-", color=colors[seq], lw=0.9)
+        ax_t.plot(grp["lon"], grp["subsc_lat_deg"], "o", color=colors[seq], markersize=3)
         for ax, col in ((ax_r, "range_km"), (ax_p, "phase_deg")):
-            ax.plot(grp["hours"], grp[col], "o-", color=colors[seq], markersize=3.5, lw=1.0)
+            ax.plot(grp["hours"], grp[col], "o-", color=colors[seq], markersize=3, lw=0.9)
     ax_t.set_xlim(0, 360)
     ax_t.set_ylim(-90, 90)
     ax_t.set_xticks(range(0, 361, 30))
     ax_t.set_yticks(range(-90, 91, 30))
+    _degree_grid(ax_t)
     ax_t.set_aspect("equal")
     ax_t.set_xlabel("east longitude (°)")
     ax_t.set_ylabel("planetocentric latitude (°)")
-    ax_t.set_title("Sub-spacecraft point", fontsize=10)
-    ax_r.set_title("Range to Vesta centre (km)", fontsize=10)
-    ax_p.set_title("Phase angle (°)", fontsize=10)
+    ax_t.set_title("(a) Sub-spacecraft point")
+    ax_r.set_title("(b) Range to Vesta centre")
+    ax_p.set_title("(c) Phase angle")
+    ax_r.set_ylabel("range (km)")
+    ax_p.set_ylabel("phase (°)")
     ax_r.tick_params(labelbottom=False)
     ax_p.set_xlabel("hours since sequence start")
 
     parts = []
     for seq, grp in m.groupby("sequence", sort=False):
         lat, ph = grp["subsc_lat_deg"], grp["phase_deg"]
-        parts.append(f"{seq} {lat.min():+.0f}° to {lat.max():+.0f}° latitude at "
+        parts.append(f"{seq} {_signed(lat.min())}° to {_signed(lat.max())}° latitude at "
                      f"{ph.min():.0f}–{ph.max():.0f}° phase over {grp['hours'].max():.1f} h")
     _suptitle(fig, "Observation geometry",
               f"{len(m)} images from {m.range_km.min():,.0f}–{m.range_km.max():,.0f} km; "
@@ -423,7 +523,7 @@ def plot_orientation(ws: Workspace, ds: Dataset, meta: pd.DataFrame, prep: dict)
     cam = get_camera(ds.camera)
     picks = [0, len(meta) // 2, len(meta) - 1]
     fig, axes = plt.subplots(1, 4, figsize=(14, 4.2), gridspec_kw={"width_ratios": [1, 1, 1, 0.9]})
-    for ax, i in zip(axes[:3], picks):
+    for k, (ax, i) in enumerate(zip(axes[:3], picks)):
         r = meta.iloc[i]
         img = apply_flip(load_fits(r["fit_path"]), prep["flip"])
         ax.imshow(np.array(Image.open(ws.images / r["image"])), cmap="gray")
@@ -433,10 +533,8 @@ def plot_orientation(ws: Workspace, ds: Dataset, meta: pd.DataFrame, prep: dict)
                    colors=[CATEGORICAL[1]], linewidths=1.5)
         ax.contour(pred.astype(float), levels=[0.5], colors=[CATEGORICAL[0]], linewidths=1.5,
                    linestyles="--", extent=ext, origin="upper")
-        ax.set_title(f"{r['sequence']} {r['time']:%H:%M}", fontsize=10)
-        ax.set_xticks([])
-        ax.set_yticks([])
-        ax.grid(False)
+        ax.set_title(f"({'abc'[k]}) {r['sequence']} {r['time']:%H:%M}")
+        _no_ticks(ax)
     fig.legend(handles=[Line2D([], [], color=CATEGORICAL[1], label="observed body mask"),
                         Line2D([], [], color=CATEGORICAL[0], ls="--",
                                label="label geometry + ellipsoid")],
@@ -444,19 +542,20 @@ def plot_orientation(ws: Workspace, ds: Dataset, meta: pd.DataFrame, prep: dict)
     ax = axes[3]
     if len(scores):
         mean = scores.groupby("flip")["iou"].mean().reindex(FLIPS)
-        ax.barh(mean.index, mean.values, color=[CATEGORICAL[0] if f == prep["flip"] else AXIS
+        ax.barh(mean.index, mean.values, color=[CATEGORICAL[0] if f == prep["flip"] else MUTED
                                                 for f in mean.index], height=0.6)
         for y, v in enumerate(mean.values):
-            ax.text(v + 0.01, y, f"{v:.3f}", va="center", fontsize=8.5, color=INK2)
+            ax.text(v + 0.015, y, f"{v:.3f}", va="center", fontsize=9, color=INK2)
         ax.set_xlim(0, 1.1)
         ax.invert_yaxis()
         ax.set_xlabel("mean silhouette IoU")
-        ax.set_title("Array flip vs label geometry", fontsize=10)
-        ax.grid(axis="y", visible=False)
+        ax.set_title("(d) Array flip vs label geometry")
+        _no_minor(ax, "y")
+        ax.tick_params(axis="y", which="both", left=False, right=False)
     else:
         ax.axis("off")
-    _suptitle(fig, "Orientation check", f"Selected flip: {prep['flip']!r} - the FITS rows are "
-              "stored bottom-up relative to the camera frame")
+    _suptitle(fig, "Orientation check", f"Selected flip: {prep['flip']!r} (the FITS rows are "
+              "stored bottom-up relative to the camera frame)")
     fig.tight_layout(rect=(0, 0.07, 1, 0.94))
     return _save(fig, ws.plots / "03_orientation_check.png")
 
@@ -491,15 +590,14 @@ def plot_features(ws: Workspace, cams: pd.DataFrame, obs: pd.DataFrame, lm: pd.D
              .drop_duplicates("sequence").sort_values("utc"))
     fig, axes = plt.subplots(1, len(picks), figsize=(5.4 * len(picks) + 1.0, 6.0), squeeze=False)
     vmax = float(np.percentile(track, 99))
-    for ax, (_, r) in zip(axes[0], picks.iterrows()):
+    for k, (ax, (_, r)) in enumerate(zip(axes[0], picks.iterrows())):
         o = obs[obs.image == r["image"]]
         ax.imshow(np.array(Image.open(ws.images / r["image"])), cmap="gray")
         sc = ax.scatter(o.u - 0.5, o.v - 0.5, c=o.landmark_id.map(track), cmap=SEQUENTIAL,
                         norm=LogNorm(3, vmax), s=4, linewidths=0)
-        ax.set_title(f"{r['sequence']} · {r['image'][:-4]}\n{len(o):,} landmarks", fontsize=10)
-        ax.set_xticks([])
-        ax.set_yticks([])
-        ax.grid(False)
+        ax.set_title(f"({chr(97 + k)}) {r['sequence']} · {r['image'][:-4]}\n"
+                     f"{len(o):,} landmarks")
+        _no_ticks(ax)
     fig.subplots_adjust(left=0.01, right=0.9, bottom=0.01, top=0.86, wspace=0.03)
     cb = _colorbar(fig, sc, "track length (images)", cax=fig.add_axes((0.915, 0.12, 0.014, 0.64)))
     _log_ticks(cb, 3, vmax)
@@ -538,15 +636,17 @@ def plot_covisibility(ws: Workspace, cams: pd.DataFrame, obs: pd.DataFrame) -> P
     seq = cams.sort_values("utc").sequence.to_numpy()
     edges = np.flatnonzero(seq[1:] != seq[:-1]) + 0.5
     for e in edges:
-        ax.axhline(e, color=INK2, lw=0.8)
-        ax.axvline(e, color=INK2, lw=0.8)
+        ax.axhline(e, color=SURFACE, lw=1.5)
+        ax.axvline(e, color=SURFACE, lw=1.5)
     bounds = np.r_[-0.5, edges, len(seq) - 0.5]
     centres = (bounds[:-1] + bounds[1:]) / 2
     labels = [seq[int(np.ceil(b + 0.5))] for b in bounds[:-1]]
     ax.set_xticks(centres, labels)
     ax.set_yticks(centres, labels)
-    ax.grid(False)
-    cb = _colorbar(fig, im, "shared landmarks", ax=ax, shrink=0.8, pad=0.02)
+    _no_minor(ax)
+    ax.tick_params(which="both", length=0)
+    ax.set_anchor("W")
+    cb = _colorbar(fig, im, "shared landmarks", cax=ax.inset_axes([1.03, 0.0, 0.04, 1.0]))
     _log_ticks(cb, 1, np.nanmax(A))
     ax.set_xlabel("image (time order)")
     fig.subplots_adjust(left=0.1, right=0.98, bottom=0.08, top=0.9)
@@ -592,14 +692,14 @@ def plot_alignment(ws: Workspace, cams: pd.DataFrame, colors, summary: dict) -> 
            for k in ("position_residual_km", "position_range_km", "position_lateral_km")}
     open_marker = {"linestyle": "--", "markerfacecolor": SURFACE}
     panels = [
-        ([("position_range_km", {})], "km", "Camera position residual along the line of sight "
+        ([("position_range_km", {})], "km", "(a) Camera position residual along the line of sight "
          f"(RMS {rms['position_range_km']:.2f} km; + = COLMAP farther than the label)"),
         ([("position_lateral_km", {})], "km",
-         f"Camera position residual sideways (RMS {rms['position_lateral_km']:.2f} km)"),
+         f"(b) Camera position residual sideways (RMS {rms['position_lateral_km']:.2f} km)"),
         ([("boresight_px", {}), ("landmark_px", open_marker)], "px",
-         f"Pointing difference: boresight, COLMAP vs label (median {c.boresight_px.median():.1f} px); "
+         f"(c) Pointing difference: boresight, COLMAP vs label (median {c.boresight_px.median():.1f} px); "
          f"landmarks under the label pose (median {c.landmark_px.median():.1f} px)"),
-        ([("twist_arcsec", {})], "arcsec", "Twist about the boresight, COLMAP vs label "
+        ([("twist_arcsec", {})], "arcsec", "(d) Twist about the boresight, COLMAP vs label "
          f"(median |twist| {c.twist_arcsec.abs().median():.0f} arcsec)"),
     ]
     fig, axes = plt.subplots(4, 1, figsize=(10, 10), sharex=True, layout="constrained")
@@ -607,19 +707,19 @@ def plot_alignment(ws: Workspace, cams: pd.DataFrame, colors, summary: dict) -> 
     for ax, (series, unit, title) in zip(axes, panels):
         for col, kw in series:
             for seq, grp in c.sort_values("utc").groupby("sequence", sort=False):
-                ax.plot(grp.hours, grp[col], color=colors[seq], markersize=3.5, lw=1.0,
+                ax.plot(grp.hours, grp[col], color=colors[seq], markersize=3, lw=0.9,
                         **{"marker": "o", "linestyle": "-", **kw})
-        ax.set_title(title, fontsize=10)
+        ax.set_title(title)
         ax.set_ylabel(unit)
     for ax in (axes[1], axes[2]):
         ax.set_ylim(bottom=0)
     for ax in (axes[0], axes[3]):
-        ax.axhline(0, color=AXIS, lw=1)
-    axes[2].legend(handles=[Line2D([], [], color=INK2, marker="o", markersize=5, lw=1.0,
+        ax.axhline(0, color=AXIS, lw=0.8, zorder=0)
+    axes[2].legend(handles=[Line2D([], [], color=INK2, marker="o", markersize=4, lw=0.9,
                                    label="boresight"),
-                            Line2D([], [], color=INK2, marker="o", markersize=5, lw=1.0,
+                            Line2D([], [], color=INK2, marker="o", markersize=4, lw=0.9,
                                    label="landmarks", **open_marker)],
-                   loc="upper right", fontsize=8.5, frameon=False)
+                   loc="upper right")
     axes[3].set_xlabel("hours since sequence start")
     a = summary["alignment"]
     n_fit = "" if fit.all() else f" over {int(fit.sum())} of {len(c)} images"
@@ -627,7 +727,7 @@ def plot_alignment(ws: Workspace, cams: pd.DataFrame, colors, summary: dict) -> 
               f"position RMS {rms['position_residual_km']:.2f} km{n_fit} "
               f"({rms['position_range_km']:.2f} km line of sight, "
               f"{rms['position_lateral_km']:.2f} km sideways); attitude "
-              f"{a['attitude_median_deg'] * 3600:.0f}\" = {c.boresight_px.median():.1f} px at the "
+              f"{a['attitude_median_deg'] * 3600:.0f}″ = {c.boresight_px.median():.1f} px at the "
               f"boresight, {c.landmark_px.median():.1f} px at the landmarks")
     fig.legend(handles=_legend_handles(colors, labels=_seq_labels(c, "utc")), loc="lower right",
                bbox_to_anchor=(0.99, 1.0), ncol=len(colors))
@@ -720,13 +820,13 @@ def _globe_view(ax, xyz: np.ndarray, values, cmap, norm, radii, lat0: float, lon
         x, y, vis = surface(np.array([0.0]), np.array([float(lon)]))
         X = ellipsoid_radius(0.0, lon, a) * latlon_to_unit(0.0, lon)
         if vis[0] and (X / np.linalg.norm(X)) @ d > 0.25:
-            ax.text(x[0], y[0], f"{lon}°E", fontsize=7.5, color=INK2, ha="center", va="bottom",
+            ax.text(x[0], y[0], f"{lon}°E", fontsize=8, color=INK2, ha="center", va="bottom",
                     path_effects=halo, zorder=4)
     for lat, name in ((-90.0, "S"), (90.0, "N")):
         x, y, vis = surface(np.array([lat]), np.array([0.0]))
         if vis[0] and abs(np.sin(np.radians(lat)) * d[2]) > 0.25:
             ax.plot(x, y, "+", color=INK, markersize=6, mew=1.0, zorder=4)
-            ax.text(x[0], y[0], f" {name}", fontsize=8, color=INK, ha="left", va="center",
+            ax.text(x[0], y[0], f" {name}", fontsize=8.5, color=INK, ha="left", va="center",
                     path_effects=halo, zorder=4)
 
     w = d / a
@@ -738,7 +838,7 @@ def _globe_view(ax, xyz: np.ndarray, values, cmap, norm, radii, lat0: float, lon
     t = np.linspace(0, 2 * np.pi, 721)[:, None]
     limb = a * (np.cos(t) * p1 + np.sin(t) * q1)
     lx, ly = limb @ right, limb @ up
-    ax.plot(lx, ly, color=AXIS, lw=0.8, zorder=3)
+    ax.plot(lx, ly, color=INK, lw=0.8, zorder=3)
     xl, yl = 1.06 * np.abs(lx).max(), 1.06 * np.abs(ly).max()
     ax.set_xlim(-xl, xl)
     ax.set_ylim(-yl, yl)
@@ -785,13 +885,14 @@ def plot_pointcloud(ws: Workspace, lm: pd.DataFrame, radii=(286.3, 278.6, 223.2)
     top = 1 - 0.78 / H
     fig, axes = plt.subplots(1, 4, figsize=(15.5, H))
     fig.subplots_adjust(left=0.005, right=0.915, bottom=0.02, top=top, wspace=0.02)
-    for ax, lon0 in zip(axes, (0, 90, 180, 270)):
+    for k, (ax, lon0) in enumerate(zip(axes, (0, 90, 180, 270))):
         sc = _globe_view(ax, xyz, g.height_km.to_numpy(), DIVERGING, norm, radii, lat0, lon0)
         ax.set_anchor("S")
         # one shared baseline for the titles, whatever each globe's aspect ratio
         box = ax.get_position(original=True)
-        fig.text((box.x0 + box.x1) / 2, top + 0.01, f"centred on {_lat_label(lat0)}, {lon0}°E",
-                 ha="center", va="bottom", fontsize=10, fontweight="bold", color=INK)
+        fig.text((box.x0 + box.x1) / 2, top + 0.01,
+                 f"({'abcd'[k]}) centred on {_lat_label(lat0)}, {lon0}°E", ha="center",
+                 va="bottom", fontsize=11, color=INK)
     _colorbar(fig, sc, "height above ellipsoid (km)", cax=fig.add_axes((0.93, 0.08, 0.01, 0.6)),
               extend="both")
     a, b, c = radii
@@ -821,14 +922,14 @@ def _polar_frame(ax):
         ax.plot(r * np.sin(t), r * np.cos(t), color=INK, lw=0.8 if lat == 0 else 0.4, alpha=0.35,
                 zorder=3)
         if lat:  # the outer ring is the equator; the spoke labels sit just outside it
-            ax.text(r * np.sin(az), r * np.cos(az), f"{abs(lat)}°S", fontsize=7.5, color=INK2,
+            ax.text(r * np.sin(az), r * np.cos(az), f"{abs(lat)}°S", fontsize=8, color=INK2,
                     ha="center", va="center", zorder=4,
                     path_effects=[pe.withStroke(linewidth=2.2, foreground=SURFACE)])
     for lon in range(0, 360, 30):
         lo = np.radians(lon)
         ax.plot([0, 90 * np.sin(lo)], [0, 90 * np.cos(lo)], color=INK,
                 lw=0.7 if lon == 0 else 0.4, alpha=0.35, zorder=3)
-        ax.text(97 * np.sin(lo), 97 * np.cos(lo), f"{lon}°E", fontsize=7.5, color=INK2,
+        ax.text(97 * np.sin(lo), 97 * np.cos(lo), f"{lon}°E", fontsize=8, color=INK2,
                 ha="center", va="center")
     ax.set_xlim(-104, 104)
     ax.set_ylim(-104, 104)
@@ -839,16 +940,16 @@ def _polar_frame(ax):
 def _map_axes(ax, title: str, night: tuple[float, float] | None):
     """Format an equirectangular longitude/latitude panel and shade polar night."""
     if night:
-        ax.axhspan(*night, color=GRID, lw=0, zorder=0)
-        ax.text(4, np.mean(night), "polar night", va="center", fontsize=8.5, color=INK2)
+        _night_band(ax, night)
     ax.set_xlim(0, 360)
     ax.set_ylim(-90, 90)
     ax.set_xticks(range(0, 361, 30))
     ax.set_yticks(range(-90, 91, 30))
+    _degree_grid(ax)
     ax.set_aspect("equal")
     ax.set_xlabel("east longitude (°)")
     ax.set_ylabel("latitude (°)")
-    ax.set_title(title, fontsize=10)
+    ax.set_title(title)
 
 
 @_styled
@@ -893,7 +994,7 @@ def plot_map(ws: Workspace, lm: pd.DataFrame, curated: pd.DataFrame,
     gh = g.iloc[order]
     sc = ax_h.scatter(gh.lon_deg, gh.lat_deg, c=gh.height_km, cmap=DIVERGING, norm=norm, s=1.0,
                       linewidths=0, rasterized=True)
-    _map_axes(ax_h, f"All landmarks ({len(g):,}), coloured by height", night_lat_deg)
+    _map_axes(ax_h, f"(a) All landmarks ({len(g):,}), coloured by height", night_lat_deg)
     _colorbar(fig, sc, "height above ellipsoid (km)", ax=ax_h, pad=0.01, fraction=0.03,
               extend="both")
 
@@ -902,7 +1003,7 @@ def plot_map(ws: Workspace, lm: pd.DataFrame, curated: pd.DataFrame,
     sc = ax_t.scatter(ct.lon_deg, ct.lat_deg, c=ct.track_length, cmap=SEQUENTIAL_MARKS,
                       norm=LogNorm(max(float(c.track_length.min()), 1.0), tmax), s=5, linewidths=0,
                       rasterized=True)
-    _map_axes(ax_t, f"Curated subset ({len(c):,}): best grade A/B landmark per "
+    _map_axes(ax_t, f"(b) Curated subset ({len(c):,}): best grade A/B landmark per "
               f"{spacing_km:g} km equal-area cell", night_lat_deg)
     cb = _colorbar(fig, sc, "track length (images)", ax=ax_t, pad=0.01, fraction=0.03)
     _log_ticks(cb, float(c.track_length.min()), tmax)
@@ -912,7 +1013,7 @@ def plot_map(ws: Workspace, lm: pd.DataFrame, curated: pd.DataFrame,
     sc = ax_p.scatter(x, y, c=s.height_km, cmap=DIVERGING, norm=norm, s=1.2, linewidths=0,
                       rasterized=True, zorder=2)
     _polar_frame(ax_p)
-    ax_p.set_title(f"Southern hemisphere from below ({len(s):,} landmarks)", fontsize=10)
+    ax_p.set_title(f"(c) Southern hemisphere from below ({len(s):,} landmarks)")
     _colorbar(fig, sc, "height above ellipsoid (km)", ax=ax_p, orientation="horizontal",
               shrink=0.7, pad=0.01, aspect=35, extend="both")
     _suptitle(fig, "Landmark maps", "Claudia double-prime frame, planetocentric latitude. Left: "
@@ -970,19 +1071,23 @@ def plot_quality(ws: Workspace, lm: pd.DataFrame) -> Path:
          [(0.0, "ellipsoid")], False),
     ]
     fig, axes = plt.subplots(2, 2, figsize=(11.5, 7.0))
-    for ax, (col, title, bins, lines, logy) in zip(axes.flat, specs):
+    for k, (ax, (col, title, bins, lines, logy)) in enumerate(zip(axes.flat, specs)):
         data = [g.loc[(g.grade == k) & g[col].between(bins[0], bins[-1]), col] for k in grades]
-        ax.hist(data, bins=bins, stacked=True, color=[GRADE_COLORS[k] for k in grades],
-                edgecolor=SURFACE, linewidth=0.4)
+        n, _, _ = ax.hist(data, bins=bins, stacked=True, edgecolor=SURFACE, linewidth=0.4,
+                          color=[GRADE_COLORS[k] for k in grades])
         for i, (x, label) in enumerate(lines):
-            ax.axvline(x, color=INK2, lw=0.9, ls="--")
-            ax.text(x, 0.99 - 0.08 * i, f" {label}", transform=ax.get_xaxis_transform(),
-                    ha="left", va="top", fontsize=8, color=INK2)
+            ax.axvline(x, color=INK, lw=0.8, ls="--")
+            ax.annotate(label, (x, 0.97 - 0.08 * i), xycoords=ax.get_xaxis_transform(),
+                        xytext=(3, 0), textcoords="offset points", ha="left", va="top",
+                        fontsize=9, color=INK,
+                        bbox=dict(facecolor=SURFACE, edgecolor="none", alpha=0.85, pad=1.0))
         if logy:
             ax.set_yscale("log")
+        else:  # headroom so the threshold labels clear the tallest bar
+            ax.set_ylim(0, max(np.max(np.atleast_2d(n)[-1]), 1) / 0.8)
         ax.yaxis.set_major_formatter(StrMethodFormatter("{x:,g}"))
         ax.set_xlim(bins[0], bins[-1])
-        ax.set_title(title, fontsize=10)
+        ax.set_title(f"({'abcd'[k]}) {title}")
         ax.set_ylabel("landmarks")
     counts = lm.grade.value_counts()
     fig.legend(handles=[Patch(color=GRADE_COLORS[k], label=f"grade {k}  ({counts.get(k, 0):,})")
@@ -1027,21 +1132,22 @@ def plot_radius(ws: Workspace, lm: pd.DataFrame) -> Path:
     hb = ax.hexbin(shown.lat_deg, shown.height_km, gridsize=(80, 32),
                    extent=(lat_lo, lat_hi, h_lo, h_hi), cmap=SEQUENTIAL, norm=LogNorm(), mincnt=1,
                    linewidths=0)
-    ax.axhline(0, color=AXIS, lw=1.0, zorder=1)
+    ax.axhline(0, color=AXIS, lw=0.8, zorder=1)
     bins = np.arange(lat_lo, lat_hi + 5, 5)
     band = g[g.lat_deg.between(lat_lo, lat_hi)]
     grp = band.groupby(pd.cut(band.lat_deg, bins), observed=False).height_km
     q = grp.quantile([0.25, 0.5, 0.75]).unstack()
     q[grp.size().to_numpy() < 20] = np.nan
     mid = (bins[:-1] + bins[1:]) / 2
-    halo = [pe.withStroke(linewidth=3.2, foreground=SURFACE)]
-    ax.plot(mid, q[0.5].to_numpy(), color=INK, lw=1.6, label="median per 5° band",
+    halo = [pe.withStroke(linewidth=3.0, foreground=SURFACE)]
+    ax.plot(mid, q[0.5].to_numpy(), color=INK, lw=1.4, label="median per 5° band",
             path_effects=halo)
-    ax.plot(mid, q[0.25].to_numpy(), color=INK, lw=0.9, ls="--", label="25th / 75th percentile",
+    ax.plot(mid, q[0.25].to_numpy(), color=INK, lw=0.8, ls="--", label="25th / 75th percentile",
             path_effects=halo)
-    ax.plot(mid, q[0.75].to_numpy(), color=INK, lw=0.9, ls="--", path_effects=halo)
+    ax.plot(mid, q[0.75].to_numpy(), color=INK, lw=0.8, ls="--", path_effects=halo)
     ax.set_xlim(lat_lo, lat_hi)
     ax.set_ylim(h_lo, h_hi)
+    ax.xaxis.set_minor_locator(MultipleLocator(5))
     ax.legend(loc="upper left")
     counts = hb.get_array()
     cb = _colorbar(fig, hb, "landmarks per cell", ax=ax, pad=0.01)
@@ -1126,10 +1232,11 @@ def plot_chips(ws: Workspace, curated: pd.DataFrame, obs: pd.DataFrame, cams: pd
             chip = img[r - half:r + half + 1, c - half:c + half + 1]
             ax.imshow(chip, cmap="gray", vmin=np.percentile(chip, 1), vmax=np.percentile(chip, 99.5))
             ax.plot(half, half, "+", color=CATEGORICAL[1], markersize=9, mew=1.2)
-            ax.set_title(pd.Timestamp(ob.t).strftime("%d %H:%M"), fontsize=7, color=INK2, loc="center")
-        row[0].text(-0.08, 0.5, f"{lmk.landmark_id}\n{lmk.lat_deg:+.1f}°, {lmk.lon_deg:.1f}°E\n"
+            ax.set_title(pd.Timestamp(ob.t).strftime("%d %H:%M"), fontsize=8, color=INK2,
+                         loc="center", pad=3)
+        row[0].text(-0.08, 0.5, f"{lmk.landmark_id}\n{_signed(lmk.lat_deg, '+.1f')}°, {lmk.lon_deg:.1f}°E\n"
                     f"{lmk.track_length} views, grade {lmk.grade}", transform=row[0].transAxes,
-                    ha="right", va="center", fontsize=7.5, color=INK)
+                    ha="right", va="center", fontsize=8.5, color=INK)
     _suptitle(fig, "Landmark chips", f"{2 * half + 1}×{2 * half + 1} px around each observation, "
               "earliest to latest view (+ = measured keypoint, title = day and UTC time)")
     return _save(fig, ws.plots / "11_landmark_chips.png")
@@ -1351,7 +1458,7 @@ def plot_nav_matches(out_dir: Path, img: np.ndarray, matches: pd.DataFrame, name
                label="rejected or outlier")
     sc = ax.scatter(inl.u, inl.v, c=inl.ncc, cmap=SEQUENTIAL_MARKS, vmin=min_ncc, vmax=1.0,
                     s=9, linewidths=0.3, edgecolors=SURFACE, label="inlier (colour = NCC)")
-    _image_axes(ax, camera, "All searched landmarks")
+    _image_axes(ax, camera, "(a) All searched landmarks")
     _colorbar(fig, sc, "NCC peak", ax=ax, pad=0.015, fraction=0.04)
     ax.legend(loc="upper left", bbox_to_anchor=(0, -0.08), ncol=2, markerscale=1.8)
 
@@ -1381,7 +1488,7 @@ def plot_nav_matches(out_dir: Path, img: np.ndarray, matches: pd.DataFrame, name
     az.set_ylim(r0 + zoom_px, r0)
     az.set_aspect("equal")
     az.set_xlabel("u (px)")
-    az.set_title(f"Zoom: {len(box)} inliers, true scale")
+    az.set_title(f"(b) Zoom: {len(box)} inliers, true scale")
     az.legend(loc="upper left", bbox_to_anchor=(0, -0.08), ncol=1)
     shift = np.hypot(inl.u - inl.u_apriori, inl.v - inl.v_apriori)
     _suptitle(fig, f"Catalog landmarks found in {name}",
@@ -1458,8 +1565,7 @@ def plot_nav_chips(out_dir: Path, img: np.ndarray, matches: pd.DataFrame, pose, 
     fig.subplots_adjust(left=1.4 / Wf, right=0.995, bottom=0.01, top=1 - 0.95 / Hf, wspace=0.06,
                         hspace=0.1)
     for ax in axes.flat:
-        ax.set_xticks([])
-        ax.set_yticks([])
+        _no_ticks(ax)
         for s in ax.spines.values():
             s.set_visible(False)
     gray = plt.get_cmap("gray").copy()
@@ -1477,13 +1583,16 @@ def plot_nav_chips(out_dir: Path, img: np.ndarray, matches: pd.DataFrame, pose, 
         ca = int(np.round(m.u_apriori - 0.5)) - half
         ra = int(np.round(m.v_apriori - 0.5)) - half
         _show_image(axes[3, k], img[ra:ra + W, ca:ca + W], origin=(ca, ra), hi=99.5)
-        axes[3, k].plot(m.u_apriori, m.v_apriori, "+", color=CATEGORICAL[1], ms=10, mew=1.6)
-        axes[3, k].plot(m.u, m.v, "o", mfc="none", mec=CATEGORICAL[0], ms=8, mew=1.6)
-        axes[0, k].set_title(f"{m.landmark_id}\nNCC {m.ncc:.3f}", fontsize=7.5, color=INK2,
+        halo = [pe.withStroke(linewidth=3.6, foreground=SURFACE)]  # legible on dark terrain
+        axes[3, k].plot(m.u_apriori, m.v_apriori, "+", color=CATEGORICAL[1], ms=10, mew=1.6,
+                        path_effects=halo)
+        axes[3, k].plot(m.u, m.v, "o", mfc="none", mec=CATEGORICAL[0], ms=8, mew=1.6,
+                        path_effects=halo)
+        axes[0, k].set_title(f"{m.landmark_id}\nNCC {m.ncc:.3f}", fontsize=8, color=INK2,
                              loc="center", weight="normal")
     for r, text in enumerate(labels):
         axes[r, 0].text(-0.1, 0.5, text, transform=axes[r, 0].transAxes, ha="right", va="center",
-                        fontsize=8, color=INK)
+                        fontsize=9, color=INK)
     fig.legend(handles=[Line2D([], [], color=CATEGORICAL[1], marker="+", ls="", ms=9, mew=1.6,
                                label="a priori prediction"),
                         Line2D([], [], color=CATEGORICAL[0], marker="o", mfc="none", ls="", ms=7,
@@ -1529,9 +1638,9 @@ def plot_nav_residuals(out_dir: Path, matches: pd.DataFrame, name: str, camera,
     fig, axes = plt.subplots(1, 3, figsize=(15.5, 5.6), width_ratios=(1, 1, 1.12))
     panels = [  # (axes, du, dv, colour, title, median arrow length as a fraction of the frame)
         (axes[0], keep.u - keep.u_apriori, keep.v - keep.v_apriori, CATEGORICAL[1],
-         "Measured − a priori prediction", 0.07),
+         "(a) Measured − a priori prediction", 0.07),
         (axes[1], -keep.residual_u_px, -keep.residual_v_px, CATEGORICAL[0],
-         "Measured − estimated-pose prediction", 0.035),
+         "(b) Measured − estimated-pose prediction", 0.035),
     ]
     for ax, du, dv, color, title, frac in panels:
         mag = float(np.median(np.hypot(du, dv))) if len(du) else 1.0
@@ -1543,7 +1652,7 @@ def plot_nav_residuals(out_dir: Path, matches: pd.DataFrame, name: str, camera,
         ax.set_title(title, pad=20)
         ax.quiverkey(q, 0.0, 1.03, key, f"{key:g} px, arrows drawn ×{gain:.0f}", labelpos="E",
                      coordinates="axes", color=color, labelcolor=INK2,
-                     fontproperties={"size": 8.5})
+                     fontproperties={"size": 9})
     axes[1].set_ylabel("")
 
     ax = axes[2]
@@ -1555,19 +1664,18 @@ def plot_nav_residuals(out_dir: Path, matches: pd.DataFrame, name: str, camera,
     if counts.size:
         cb = _colorbar(fig, hb, "inliers per cell", ax=ax, pad=0.02, fraction=0.045)
         _log_ticks(cb, float(counts.min()), float(counts.max()))
-    ax.axhline(0, color=AXIS, lw=0.8)
-    ax.axvline(0, color=AXIS, lw=0.8)
+    ax.axhline(0, color=AXIS, lw=0.8, zorder=0)
+    ax.axvline(0, color=AXIS, lw=0.8, zorder=0)
     ax.set_xlim(-lim, lim)
     ax.set_ylim(lim, -lim)
     ax.set_aspect("equal")
     ax.set_xlabel("u residual (px)")
     ax.set_ylabel("v residual (px)")
-    ax.set_title(f"Post-fit residuals, {allin.image.nunique()} images")
+    ax.set_title(f"(c) Post-fit residuals, {allin.image.nunique()} images", pad=20)
     if len(du):
-        ax.text(0.03, 0.97, f"RMS u {np.sqrt(np.mean(du**2)):.2f} px, v {np.sqrt(np.mean(dv**2)):.2f} px\n"
-                f"median |r| {np.median(np.hypot(du, dv)):.2f} px\n{len(du):,} inliers",
-                transform=ax.transAxes, ha="left", va="top", fontsize=8.5, color=INK,
-                bbox=dict(facecolor=SURFACE, edgecolor="none", alpha=0.85, pad=2))
+        ax.text(0.0, 1.03, f"RMS u {np.sqrt(np.mean(du**2)):.2f} px, v {np.sqrt(np.mean(dv**2)):.2f} px; "
+                f"median |r| {np.median(np.hypot(du, dv)):.2f} px; {len(du):,} inliers",
+                transform=ax.transAxes, ha="left", va="center", fontsize=9, color=INK2)
     _suptitle(fig, "Pointing error and fit residuals",
               f"Arrows for {name} (one per {cell_px:.0f} px cell, exaggerated, see keys): a common "
               "shift means a pointing error, a rotation about the centre a twist error")
@@ -1623,7 +1731,7 @@ def plot_nav_timeline(out_dir: Path, poses: pd.DataFrame) -> Path:
     hours = ((p.time - p.time.min()).dt.total_seconds() / 3600).to_numpy()
     ok = p.success.astype(bool).to_numpy()
     fig, axes = plt.subplots(2, 2, figsize=(12, 7.6), sharex=True)
-    style = dict(marker="o", ms=3.5, lw=1.3)
+    style = dict(marker="o", ms=3, lw=1.0)
 
     def line(ax, y, color, label, mask=None):
         """Plot one series against time, broken at gaps between sequences."""
@@ -1634,9 +1742,9 @@ def plot_nav_timeline(out_dir: Path, poses: pd.DataFrame) -> Path:
     ax = axes[0, 0]
     line(ax, p.du_px, CATEGORICAL[0], "u offset (du)", ok)
     line(ax, p.dv_px, CATEGORICAL[1], "v offset (dv)", ok)
-    ax.axhline(0, color=AXIS, lw=0.8)
+    ax.axhline(0, color=AXIS, lw=0.8, zorder=0)
     ax.set_ylabel("boresight shift (px)")
-    ax.set_title("Pointing correction (estimated − label)")
+    ax.set_title("(a) Pointing correction (estimated − label)")
     ax.legend(loc="best")
 
     ax = axes[0, 1]
@@ -1646,7 +1754,7 @@ def plot_nav_timeline(out_dir: Path, poses: pd.DataFrame) -> Path:
         line(ax, p.sfm_estimate_rms_px, CATEGORICAL[2], "estimated vs catalog pose", ok)
     _log_axis(ax)
     ax.set_ylabel("RMS (px)")
-    ax.set_title("Landmark reprojection RMS")
+    ax.set_title("(b) Landmark reprojection RMS")
     ax.legend(loc="best")
 
     ax = axes[1, 0]
@@ -1655,20 +1763,20 @@ def plot_nav_timeline(out_dir: Path, poses: pd.DataFrame) -> Path:
     line(ax, p.num_inliers, CATEGORICAL[0], "inliers of the pose fit")
     ax.set_ylim(bottom=0)
     ax.set_ylabel("landmarks per image")
-    ax.set_title("Matches")
+    ax.set_title("(c) Matches")
     ax.legend(loc="lower left")
 
     ax = axes[1, 1]
     line(ax, p.median_ncc, CATEGORICAL[0], None, ok)
     ax.set_ylabel("median NCC of the inliers")
-    ax.set_title("Match quality")
+    ax.set_title("(d) Match quality")
     for ax in axes[1]:
         ax.set_xlabel("hours since the first image")
     seqs = ", ".join(dict.fromkeys(p.sequence.astype(str)))
     _suptitle(fig, "Navigation with catalog landmarks",
               f"{ok.sum()} of {len(p)} images with a pose fit ({seqs}, from "
               f"{p.time.min():%d %b %Y %H:%M} UTC)")
-    fig.tight_layout(rect=(0, 0, 1, 0.93))
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
     return _save(fig, out_dir / "04_navigation.png")
 
 
@@ -1722,28 +1830,32 @@ def plot_relative_pose(out_dir: Path, rel: pd.DataFrame, traj: pd.DataFrame | No
     else:
         tr = None
     fig, axes = plt.subplots(2, 3, figsize=(15, 7.8))
-    dot = dict(marker="o", ms=4, lw=0, mec=SURFACE, mew=0.4)
+    dot = dict(marker="o", ms=3.5, lw=0, mec=SURFACE, mew=0.4)
 
     def gap_line(ax, x, y, **kw):
         """Line broken at gaps between sequences."""
         xx, yy = _gap_nan(x, y)
         ax.plot(xx, yy, **kw)
 
-    for ax, k, name in zip(axes[0], ("range", "east", "north"), ("Range", "East", "North")):
-        ax.axhline(0, color=AXIS, lw=0.8)
+    for ax, k, name in zip(axes[0], ("range", "east", "north"),
+                           ("(a) Range", "(b) East", "(c) North")):
+        ax.axhline(0, color=AXIS, lw=0.8, zorder=0)
         if tr is not None:
             mid, sig = tr[f"{k}_minus_label_km"].to_numpy(), tr[f"sigma_{k}_km"].to_numpy()
             xx, lo, hi = _gap_nan(tr_hours, mid - sig, mid + sig)
-            ax.fill_between(xx, lo, hi, color=GRID, lw=0, label="smoothed arc ±1σ")
-            gap_line(ax, tr_hours, mid, color=INK2, lw=1.4, label="smoothed arc")
+            ax.fill_between(xx, lo, hi, color="#dddddd", lw=0, label=r"smoothed arc $\pm1\sigma$")
+            gap_line(ax, tr_hours, mid, color=INK2, lw=1.2, label="smoothed arc")
         ax.errorbar(hours, p[f"{k}_minus_label_km"], yerr=p[f"sigma_{k}_km"], color=CATEGORICAL[0],
-                    elinewidth=0.9, capsize=0, label="PnP, ±1σ", **dot)
+                    elinewidth=0.8, capsize=0, label=r"PnP, $\pm1\sigma$", **dot)
         if has_sfm:
             ax.plot(hours, p[f"{k}_minus_label_km"] - p[f"{k}_minus_sfm_km"],
                     color=CATEGORICAL[2], label="COLMAP (catalog image)", **dot)
         ax.set_ylabel("km")
         ax.set_title(f"{name}: estimate − label position")
-    axes[0, 0].legend(loc="best")
+    # One key for (a)-(c), in the title row: inside a panel it would cover error bars
+    h, lab = axes[0, 0].get_legend_handles_labels()
+    fig.legend(h, lab, loc="lower right", bbox_to_anchor=(0.995, 1.0), ncol=len(h),
+               borderaxespad=0.0)
 
     ax = axes[1, 0]
     ax.plot(hours, p.attitude_minus_label_arcsec, color=CATEGORICAL[0], label="PnP", **dot)
@@ -1755,7 +1867,7 @@ def plot_relative_pose(out_dir: Path, rel: pd.DataFrame, traj: pd.DataFrame | No
                 label="COLMAP (catalog image)", **dot)
     ax.set_ylim(bottom=0)
     ax.set_ylabel("rotation angle (arcsec)")
-    ax.set_title("Attitude: estimate − label")
+    ax.set_title("(d) Attitude: estimate − label")
     ax.legend(loc="best")
 
     ax = axes[1, 1]
@@ -1769,39 +1881,43 @@ def plot_relative_pose(out_dir: Path, rel: pd.DataFrame, traj: pd.DataFrame | No
                     label=label)
     _log_axis(ax)
     ax.set_ylabel("RMS (px)")
-    ax.set_title("Landmark reprojection RMS, same inliers")
+    ax.set_title("(e) Landmark reprojection RMS, same inliers")
     ax.legend(loc="best")
 
     ax = axes[1, 2]
     axes_names = ["range", "east", "north"]
     x = np.arange(3)
     formal = [p[f"sigma_{k}_km"].median() for k in axes_names]
+    handles = [Line2D([], [], color=INK, lw=2, label=r"formal $1\sigma$ (median)")]
     if tr is not None:
         scatter = [np.sqrt(np.mean(tr[f"residual_{k}_km"] ** 2)) for k in axes_names]
-        ax.bar(x, scatter, width=0.55, color=CATEGORICAL[0], label="scatter about the arc (RMS)")
+        handles.append(ax.bar(x, scatter, width=0.55, color=CATEGORICAL[0],
+                              label="scatter about the arc (RMS)"))
         chi2 = ", ".join(f"{s} {v:.2f}" for s, v in tr.groupby("sequence").chi2_dof.first().items())
-        ax.set_title(f"Uncertainty check (χ²/dof: {chi2})", fontsize=10.5)
+        ax.set_title(f"(f) Uncertainty check ($\\chi^2$/dof: {chi2})")
     else:
-        ax.set_title("Uncertainty check")
+        ax.set_title("(f) Uncertainty check")
         ax.text(0.5, 0.82, "no arc: it needs three or more images per sequence", ha="center",
                 va="center", color=INK2, transform=ax.transAxes)
-    ax.plot(x, formal, color=INK, marker="_", ms=26, mew=2, lw=0, label="formal 1σ (median)")
+    ax.plot(x, formal, color=INK, marker="_", ms=26, mew=2, lw=0, zorder=3)
     ax.set_xticks(x, ["range", "east", "north"])
+    _no_minor(ax, "x")
+    ax.tick_params(axis="x", which="both", bottom=False, top=False)
     ax.set_xlim(-0.6, 2.6)
     ax.set_ylim(0, max(formal + (scatter if tr is not None else [])) * (1.35 if tr is not None
                                                                          else 1.6))
     ax.set_ylabel("km")
-    ax.legend(loc="upper left")
+    ax.legend(handles=handles, loc="upper left")
 
     for ax in [*axes[0], axes[1, 0], axes[1, 1]]:
         ax.set_xlabel("hours since the first image")
     tgt = np.hypot(p.sigma_target_u_px, p.sigma_target_v_px).median()
     _suptitle(fig, f"Relative pose with respect to {target} (PnP on the landmark matches)",
               f"{len(p)} of {len(rel)} images solved without the label pose; median range "
-              f"{p.range_km.median():.0f} km, formal 1σ {p.sigma_range_km.median():.2f} km along "
+              f"{p.range_km.median():.0f} km, formal $1\\sigma$ {p.sigma_range_km.median():.2f} km along "
               f"the range, {np.median(formal[1:]):.2f} km across it, {tgt:.2f} px for the body "
               f"centre in the image")
-    fig.tight_layout(rect=(0, 0, 1, 0.93))
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
     return _save(fig, out_dir / "05_relative_pose.png")
 
 
